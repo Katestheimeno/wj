@@ -86,6 +86,7 @@ do_install() {
            warn "  export PATH=\"$BIN_DIR:\$PATH\"" ;;
     esac
     say "Done. Run 'wj help' to get started."
+    say "Tip: shell completion -> add 'eval \"\$(wj completion bash)\"' to your shell rc (or 'completion zsh')."
 }
 
 do_uninstall() {

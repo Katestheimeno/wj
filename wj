@@ -6,7 +6,7 @@
 # Everything else — status, grid, reports, exports — is derived by replaying it.
 #
 #   Event row:  timestamp \t task_id \t project \t event \t note
-#   Events:     start | pause | resume | complete | defer | log | commit
+#   Events:     start | pause | resume | complete | defer | log | amend | move | cancel | commit
 #
 # Layout:
 #   ~/.config/wj/config                  settings   (override: $WJ_CONFIG)
@@ -140,19 +140,33 @@ max_task_id() {
     echo "$max"
 }
 
-# the note of a task's `start` event (its description)
+# a task's description: its `start` note, overridden by the latest `amend`
 task_desc() {
-    local file=$1 want=$2 ts id proj evt note
+    local file=$1 want=$2 ts id proj evt note desc=""
     while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" && $evt == start ]] && { printf '%s' "$note"; return; }
+        [[ $id == "$want" ]] || continue
+        case $evt in start|amend) desc=$note ;; esac
     done <"$file"
+    printf '%s' "$desc"
 }
 
+# a task's project: its `start` project, overridden by the latest `move`
 task_project() {
+    local file=$1 want=$2 ts id proj evt note cur=""
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ $id == "$want" ]] || continue
+        case $evt in start|move) cur=$proj ;; esac
+    done <"$file"
+    printf '%s' "$cur"
+}
+
+# whether a task has been cancelled (voided)
+task_cancelled() {
     local file=$1 want=$2 ts id proj evt note
     while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" ]] && { printf '%s' "$proj"; return; }
+        [[ $id == "$want" && $evt == cancel ]] && return 0
     done <"$file"
+    return 1
 }
 
 task_start_time() {
@@ -172,6 +186,7 @@ task_status() {
             pause)        st=paused ;;
             defer)        st=deferred ;;
             complete)     st=completed ;;
+            cancel)       st=cancelled ;;
         esac
     done <"$file"
     printf '%s' "$st"
@@ -187,7 +202,7 @@ task_ids() {
 # total active minutes for a task; arg3 = now-minute (cap for open intervals)
 task_minutes() {
     local file=$1 want=$2 now_min=$3
-    local ts id proj evt note m active=0 open=0 total=0 slot=$slot_minutes
+    local ts id proj evt note m active=0 open=0 total=0 slot=$slot_minutes cancelled=0
     while IFS=$'\t' read -r ts id proj evt note; do
         [[ $id == "$want" ]] || continue
         m=$(hm_to_min "${ts:11:5}")
@@ -198,8 +213,10 @@ task_minutes() {
                 if (( active )); then
                     total=$(( total + m - open )); active=0
                 fi ;;
+            cancel) active=0; cancelled=1 ;;
         esac
     done <"$file"
+    (( cancelled )) && { printf '0'; return; }
     (( active )) && total=$(( total + now_min - open ))
     if [[ $totals == slot ]]; then
         total=$(( (total + slot - 1) / slot * slot ))
@@ -223,11 +240,14 @@ find_task() {
     [[ -f $file ]] || return 0
     declare -A status=() lastseq=() pproj=()
     while IFS=$'\t' read -r ts id p evt note; do
+        # move re-homes the task's project without being a state transition
+        [[ $evt == move ]] && { pproj[$id]=$p; continue; }
         case $evt in
             start|resume) status[$id]=active ;;
             pause)        status[$id]=paused ;;
             defer)        status[$id]=deferred ;;
             complete)     status[$id]=completed ;;
+            cancel)       status[$id]=cancelled ;;
             *)            continue ;;
         esac
         seq=$(( seq + 1 )); lastseq[$id]=$seq; pproj[$id]=$p
@@ -249,13 +269,14 @@ find_task() {
 # ---------------------------------------------------------------------------
 # Argument parsing — extract global flags, leave positionals in ARGS[]
 # ---------------------------------------------------------------------------
-AT=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"
+AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"
 declare -a ARGS=()
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
 parse_args() {
     while (( $# )); do
         case $1 in
             --at)       need_val "$@"; AT=$2;       shift 2 ;;
+            --date|--on) need_val "$@"; ON=$2;      shift 2 ;;
             --project)  need_val "$@"; PROJECT_OVERRIDE=$2; shift 2 ;;
             --from)     need_val "$@"; FROM=$2;     shift 2 ;;
             --to)       need_val "$@"; TO=$2;       shift 2 ;;
@@ -266,11 +287,14 @@ parse_args() {
         esac
     done
     [[ -z $AT || $AT =~ ^[0-9]{1,2}:[0-9]{2}$ ]] || die "--at must be HH:MM (got '$AT')"
+    [[ -z $ON || $ON =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "--date must be YYYY-MM-DD (got '$ON')"
 }
 
 TODAY=$(date +%Y-%m-%d)
 now_ts() {
-    if [[ -n $AT ]]; then printf '%sT%s' "$TODAY" "$AT"; else date +%Y-%m-%dT%H:%M; fi
+    local d=${ON:-$TODAY} t
+    if [[ -n $AT ]]; then t=$AT; else t=$(date +%H:%M); fi
+    printf '%sT%s' "$d" "$t"
 }
 now_min() {
     if [[ -n $AT ]]; then hm_to_min "$AT"; else hm_to_min "$(date +%H:%M)"; fi
@@ -343,6 +367,44 @@ cmd_log() {
     printf '%s  %s  note added\n' "$id" "${ts:11:5}"
 }
 
+cmd_amend() {
+    local ts file proj id desc
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; desc=${ARGS[*]:1}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" active "$proj"); desc=${ARGS[*]:-}; fi
+    [[ -n $id ]] || die "no task to amend (give a task id)"
+    [[ -n $desc ]] || die "amend needs a new description"
+    append_event "$ts" "$id" "$(task_project "$file" "$id")" amend "$desc"
+    printf '%s  %s  amended — %s\n' "$id" "${ts:11:5}" "$desc"
+}
+
+cmd_move() {
+    local ts file proj id newproj oldproj
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; newproj=${ARGS[*]:1}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" active "$proj"); newproj=${ARGS[*]:-}; fi
+    [[ -n $id ]] || die "no task to move (give a task id)"
+    [[ -n $newproj ]] || die "move needs a target project"
+    newproj=$(printf '%s' "$newproj" | tr '[:upper:]' '[:lower:]')
+    oldproj=$(task_project "$file" "$id")
+    # new project in the project column; old kept in the note for audit
+    append_event "$ts" "$id" "$newproj" move "$oldproj"
+    printf '%s  %s  moved  %s -> %s\n' "$id" "${ts:11:5}" "$oldproj" "$newproj"
+}
+
+cmd_cancel() {
+    local ts file proj id
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" active "$proj"); fi
+    [[ -n $id ]] || die "no task to cancel (give a task id)"
+    append_event "$ts" "$id" "$(task_project "$file" "$id")" cancel ""
+    printf '%s  %s  cancelled (voided — hidden from status/grid/report)\n' "$id" "${ts:11:5}"
+}
+
 cmd_complete() {
     local ts file proj id
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
@@ -368,7 +430,7 @@ cmd_complete() {
 }
 
 cmd_status() {
-    local d=${ARGS[0]:-$TODAY} file ids id nm
+    local d=${ARGS[0]:-${ON:-$TODAY}} file ids id nm
     file=$(day_file "$d")
     [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
     if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$(hm_to_min "$shift_end"); fi
@@ -377,6 +439,7 @@ cmd_status() {
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ---- ---------------- ------------ ------- -----------
     while read -r id; do
         [[ -z $id ]] && continue
+        task_cancelled "$file" "$id" && continue
         local p st mins desc
         p=$(task_project "$file" "$id")
         st=$(task_status "$file" "$id")
@@ -388,13 +451,14 @@ cmd_status() {
     local tot=0
     while read -r id; do
         [[ -z $id ]] && continue
+        task_cancelled "$file" "$id" && continue
         tot=$(( tot + $(task_minutes "$file" "$id" "$nm") ))
     done < <(task_ids "$file")
     printf '\nTotal tracked: %s\n\n' "$(fmt_dur "$tot")"
 }
 
 cmd_grid() {
-    local d=${ARGS[0]:-$TODAY} file
+    local d=${ARGS[0]:-${ON:-$TODAY}} file
     file=$(day_file "$d")
     [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
     local start end slot
@@ -403,9 +467,13 @@ cmd_grid() {
     if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$end; fi
     (( nm > end )) && nm=$end
 
-    # collect ids
+    # collect ids (cancelled tasks are voided — omit them)
     local -a ids=()
-    while read -r i; do [[ -n $i ]] && ids+=("$i"); done < <(task_ids "$file")
+    while read -r i; do
+        [[ -n $i ]] || continue
+        task_cancelled "$file" "$i" && continue
+        ids+=("$i")
+    done < <(task_ids "$file")
     (( ${#ids[@]} )) || { printf 'No tasks for %s\n' "$d"; return; }
 
     # build cell map  CELL[id:slotmin]=symbol
@@ -473,6 +541,7 @@ cmd_report() {
         [[ $d == "$TODAY" ]] && nm=$(now_min)
         while read -r id; do
             [[ -z $id ]] && continue
+            task_cancelled "$file" "$id" && continue
             case $BY in
                 project) key=$(task_project "$file" "$id") ;;
                 task)    key="$id  $(task_desc "$file" "$id")" ;;
@@ -522,6 +591,46 @@ cmd_export() {
     [[ $FORMAT == json ]] && { (( first )) && printf ']\n' || printf '\n]\n'; }
 }
 
+# internal: today's task ids (for shell completion)
+list_task_ids() { task_ids "$(day_file "$TODAY")"; }
+# internal: distinct project names ever seen (for shell completion)
+list_projects() {
+    [[ -d $WJ_DATA_DIR ]] || return 0
+    find "$WJ_DATA_DIR" -name '*.tsv' -type f -exec awk -F'\t' '{print $3}' {} + 2>/dev/null \
+        | sort -u | grep -v '^$'
+}
+
+cmd_completion() {
+    local shell=${ARGS[0]:-bash}
+    case $shell in bash|zsh) ;; *) die "completion supports: bash | zsh" ;; esac
+    [[ $shell == zsh ]] && printf 'autoload -U +X bashcompinit && bashcompinit\n'
+    cat <<'EOF'
+_wj() {
+    local cur prev cmds flags cmd
+    cur=${COMP_WORDS[COMP_CWORD]}
+    prev=${COMP_WORDS[COMP_CWORD-1]}
+    cmds="start pause resume complete defer log amend move cancel status grid report export config completion help"
+    flags="--at --date --project --from --to --format --by"
+    if (( COMP_CWORD == 1 )); then
+        COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
+    fi
+    case $prev in
+        --format)    COMPREPLY=( $(compgen -W "csv json tsv" -- "$cur") ); return ;;
+        --by)        COMPREPLY=( $(compgen -W "project task day" -- "$cur") ); return ;;
+        --project)   COMPREPLY=( $(compgen -W "$(wj _projects 2>/dev/null)" -- "$cur") ); return ;;
+        completion)  COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") ); return ;;
+    esac
+    if [[ $cur == -* ]]; then COMPREPLY=( $(compgen -W "$flags" -- "$cur") ); return; fi
+    cmd=${COMP_WORDS[1]}
+    case $cmd in
+        pause|resume|complete|defer|amend|move|cancel)
+            COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") ) ;;
+    esac
+}
+complete -F _wj wj
+EOF
+}
+
 cmd_help() {
     cat <<'EOF'
 wj — cross-project daily task & time tracker
@@ -545,6 +654,11 @@ TASK COMMANDS
                       commits made during its window.
   defer  [id] [why]   Set a task aside (e.g. blocked / picking it up another day).
   log <note>          Attach a timestamped note to the running task.
+  amend [id] <desc>   Replace a task's description (running task, or given id).
+                      Keeps history: appends an event, never rewrites the log.
+  move  [id] <proj>   Re-home a task to another project (fix wrong auto-detection).
+  cancel [id]         Void a mistaken task: 0 time, hidden from status/grid/report
+                      (kept in the raw log / export for audit).
 
 VIEW & ANALYSIS
   status [date]       Per-task totals table for a day (default: today). Default cmd.
@@ -554,11 +668,14 @@ VIEW & ANALYSIS
 
 OTHER
   config              Print the path to the active config file.
+  completion SHELL    Print a completion script: completion bash | completion zsh.
   help                Show this help.
 
 FLAGS
   --at HH:MM          Act at a past time instead of now (24h). Backfills the grid.
                       Chain across commands to reconstruct a whole day after the fact.
+  --date YYYY-MM-DD   Act on another day, not today (alias: --on). Combine with --at
+                      to reconstruct any past day; defaults the day for status/grid.
   --project NAME      Override project detection. Use for non-git work, e.g.
                       --project meetings / --project "maroc ventes" / --project admin.
                       On start: where the task lives. On pause/complete/etc: scope.
@@ -568,6 +685,7 @@ FLAGS
 
 STATUSES & GRID SYMBOLS
   in-progress  >>     paused  --     completed  **     deferred  ~~     (idle blank)
+  cancelled tasks are voided and omitted from views (still in the raw log).
 
 CONCURRENCY
   Only one task per project runs at a time (starting/resuming auto-pauses the
@@ -584,6 +702,10 @@ CONFIG  (~/.config/wj/config — created on first run)
 EXAMPLES
   wj start "Refactor auth" --project backend   # start tracking
   wj log "extracted token service"             # note on the running task
+  wj amend "Refactor auth + token service"     # fix the running task's name
+  wj amend T2 "Standup & planning"             # ...or a specific task by id
+  wj move T1 frontend                          # re-home a mis-detected task
+  wj cancel T3                                  # void a task started by mistake
   wj pause                                      # pause it (heading into a meeting)
   wj start "Standup" --project meetings         # a different, non-git project
   wj complete --project meetings                # finish standup
@@ -594,10 +716,14 @@ EXAMPLES
   wj report --from 2026-06-01 --to 2026-06-30 --by project
   wj export --format csv > june.csv
 
-  # Reconstruct a past morning retroactively:
-  wj start "Fixing auth" --at 09:00 --project backend
-  wj pause standup --at 09:30
-  wj complete --at 11:30 --project backend
+  # Reconstruct a past morning retroactively (any day, with --date):
+  wj start "Fixing auth" --date 2026-05-30 --at 09:00 --project backend
+  wj pause T1 --date 2026-05-30 --at 09:30
+  wj complete T1 --date 2026-05-30 --at 11:30
+  wj status --date 2026-05-30                   # review that day
+
+  # One-time setup: shell completion
+  echo 'eval "$(wj completion bash)"' >> ~/.bashrc   # or: completion zsh -> ~/.zshrc
 
 FILES
   config :  ~/.config/wj/config          (override: $WJ_CONFIG)
@@ -620,11 +746,17 @@ main() {
         complete) cmd_complete ;;
         defer)    cmd_defer ;;
         log)      cmd_log ;;
+        amend)    cmd_amend ;;
+        move)     cmd_move ;;
+        cancel)   cmd_cancel ;;
         status)   cmd_status ;;
         grid)     cmd_grid ;;
         report)   cmd_report ;;
         export)   cmd_export ;;
+        completion) cmd_completion ;;
         config)   printf '%s\n' "$WJ_CONFIG" ;;
+        _tasks)   list_task_ids ;;
+        _projects) list_projects ;;
         help|-h|--help) cmd_help ;;
         *)        die "unknown command: $cmd (try 'wj help')" ;;
     esac

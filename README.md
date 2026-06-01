@@ -96,10 +96,14 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `wj complete [id]` | Finish a task; sum its time; record git commits in its window. |
 | `wj defer [id] [why]` | Set a task aside (blocked, or for another day). |
 | `wj log <note>` | Attach a timestamped note to the running task. |
+| `wj amend [id] <desc>` | Replace a task's description (running task, or a given id). Appends an event — history is never rewritten. |
+| `wj move [id] <proj>` | Re-home a task to another project (fix wrong auto-detection). |
+| `wj cancel [id]` | Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw log for audit). |
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
 | `wj grid [date]` | Slot-by-slot schedule for a day. |
 | `wj report [flags]` | Aggregate time over a date range, grouped by `--by`. |
 | `wj export [flags]` | Dump raw events as csv/json/tsv over a date range. |
+| `wj completion <shell>` | Print a shell-completion script (`bash` or `zsh`). |
 | `wj config` | Print the active config file path. |
 | `wj help` | Full help. |
 
@@ -107,14 +111,20 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 
 | Flag | Applies to | Purpose |
 |---|---|---|
-| `--at HH:MM` | start, pause, resume, complete, defer, log, status, grid | Act at a past time instead of now (24h). Backfills the grid. |
-| `--project NAME` | start (where the task lives); pause/complete/defer/log/resume (scope) | Override project detection. Quote names with spaces. |
+| `--at HH:MM` | start, pause, resume, complete, defer, log, amend, move, cancel, status, grid | Act at a past time instead of now (24h). Backfills the grid. |
+| `--date YYYY-MM-DD` | any write command + status, grid | Act on another day, not today (alias `--on`). Combine with `--at` to reconstruct any past day. |
+| `--project NAME` | start (where the task lives); pause/complete/defer/log/resume/amend/cancel (scope) | Override project detection. Quote names with spaces. |
 | `--from D --to D` | report, export | Inclusive date range `YYYY-MM-DD`. Default: today. |
 | `--by KEY` | report | Group by `project` \| `task` \| `day`. Default: `project`. |
 | `--format FMT` | export | `csv` \| `json` \| `tsv`. Default: `csv`. |
 
-If you omit `--project` on `pause`/`complete`/`log`, the command acts on whatever
-is currently running. Pass `--project` to scope it to one project.
+If you omit `--project` on `pause`/`complete`/`log`/`amend`/`move`/`cancel`, the
+command acts on whatever is currently running. Pass `--project` to scope it to one
+project, or a task id (`T2`) to target a specific task in any state.
+
+**Shell completion:** add `eval "$(wj completion bash)"` to your `~/.bashrc` (or
+`wj completion zsh` to `~/.zshrc`) to complete commands, flags, task ids and
+project names.
 
 ## How it works
 
@@ -134,7 +144,7 @@ timestamp           task_id  project        event     note
 2026-06-01T11:30    T1       backend        commit    89a5697 wire up token refresh
 ```
 
-Events: `start` · `pause` · `resume` · `complete` · `defer` · `log` · `commit`.
+Events: `start` · `pause` · `resume` · `complete` · `defer` · `log` · `amend` · `move` · `cancel` · `commit`.
 A task's description is the note on its `start` event; its status, time totals and
 grid placement are all computed by replaying the rows.
 
