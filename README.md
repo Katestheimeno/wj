@@ -90,15 +90,38 @@ To install the optional terminal UI as well (needs [Go](https://go.dev/dl)):
 curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | bash -s -- --with-ui
 ```
 
-### Manual install
+### Build from source (with `make`)
+
+Clone the repo and use the Makefile to install both the CLI and the UI (the man
+page comes along automatically). Needs Go for the UI.
+
+```sh
+git clone https://github.com/Katestheimeno/wj.git && cd wj
+
+make install                 # build wj-tui, install wj + wj-tui + man -> ~/.local
+hash -r                      # refresh your shell's command cache
+
+# remove it again (keeps your config & data):
+make uninstall
+
+# reinstall:
+make install && hash -r
+```
+
+Targets: `make install-cli` (just the bash CLI + man), `make install-ui` (just
+the UI binary), `make test`, `make clean`. Override the location with
+`PREFIX`, e.g. a system-wide install: `sudo make install PREFIX=/usr/local`.
+
+> **Note on PATH:** if an older `wj` is already installed (e.g. a system package
+> in `/usr/bin`), it may shadow `~/.local/bin/wj`. Remove the old one first
+> (e.g. `sudo pacman -Rns wj`) and run `hash -r`. Check with `command -v wj`.
+
+### Manual install (CLI only, no Go)
 
 ```sh
 git clone https://github.com/Katestheimeno/wj.git && cd wj
 chmod +x wj
 ln -s "$PWD/wj" ~/.local/bin/wj          # or: sudo ln -s "$PWD/wj" /usr/local/bin/wj
-
-# optional UI (needs Go):
-make install-ui                          # builds tui/ and installs ~/.local/bin/wj-tui
 ```
 
 First run seeds a config file at `~/.config/wj/config`. Data is written under

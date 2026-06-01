@@ -117,7 +117,8 @@ install_ui() {
     tuidir=$(find "$TMPDIR_BUILD" -maxdepth 2 -type d -name tui -print -quit)
     [ -n "$tuidir" ] || die "source tarball has no tui/ directory (need ref with the UI)"
     say "Compiling (this may take a moment) ..."
-    ( cd "$tuidir" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$BIN_DIR/$TUI_NAME" . ) \
+    ( cd "$tuidir" && CGO_ENABLED=0 go build -trimpath \
+        -ldflags="-s -w -X main.version=$REF" -o "$BIN_DIR/$TUI_NAME" . ) \
         || die "go build failed"
     chmod 0755 "$BIN_DIR/$TUI_NAME"
     say "Installed -> $BIN_DIR/$TUI_NAME"
