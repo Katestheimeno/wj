@@ -49,12 +49,38 @@ Total tracked: 1h15m
 
 ## Install
 
+One line — no clone needed:
+
 ```sh
-git clone <your-repo-url> wj && cd wj
+curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | bash
+```
+
+This fetches `wj` and installs it to `~/.local/bin/wj`. If that dir isn't on your
+`PATH`, the installer tells you the line to add to your shell rc.
+
+> Prefer not to pipe to `bash`? Download `install.sh`, read it, then run it.
+
+**Options** (pass after `bash -s --`, or as flags when running the script directly):
+
+```sh
+# Uninstall (keeps your config & data)
+curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | bash -s -- --uninstall
+
+# Uninstall and delete config + data too
+curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | bash -s -- --uninstall --purge
+```
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `WJ_BIN_DIR` | `~/.local/bin` | Where to install/remove the binary. |
+| `WJ_REF` | `main` | Git branch/tag to install from. |
+
+### Manual install
+
+```sh
+git clone https://github.com/Katestheimeno/wj.git && cd wj
 chmod +x wj
-# put it on your PATH (any one of these):
-ln -s "$PWD/wj" ~/.local/bin/wj      # if ~/.local/bin is on PATH
-# or: sudo ln -s "$PWD/wj" /usr/local/bin/wj
+ln -s "$PWD/wj" ~/.local/bin/wj          # or: sudo ln -s "$PWD/wj" /usr/local/bin/wj
 ```
 
 First run seeds a config file at `~/.config/wj/config`. Data is written under
@@ -202,4 +228,4 @@ wj complete                 --at 11:30 --project backend
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE).
