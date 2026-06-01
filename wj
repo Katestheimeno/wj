@@ -526,31 +526,82 @@ cmd_help() {
     cat <<'EOF'
 wj — cross-project daily task & time tracker
 
-USAGE
-  wj <command> [args] [--at HH:MM] [--project NAME]
+Track what you work on across every project from one CLI. Each action appends to
+an immutable per-day TSV event log; status, grids, reports and exports are all
+derived from that log, so your data stays plain, greppable and easy to analyse.
 
-COMMANDS
-  start <desc>        Start a new task (auto-pauses active task in same project)
-  pause  [id] [why]   Pause active task (or given id)
-  resume [id]         Resume most-recent paused/deferred task (or given id)
-  complete [id]       Complete a task; sum time; record git commits in its window
-  defer  [id] [why]   Set a task aside
-  log <note>          Add a timestamped note to the active task
-  status [date]       Compact totals table (default command)
-  grid   [date]       Render the slot-by-slot schedule view
-  report [--from D --to D] [--by project|task|day]
-  export [--from D --to D] [--format csv|json|tsv]
-  config              Print the active config file path
-  help                This help
+USAGE
+  wj [command] [args] [flags]
+
+  Project is auto-detected (git remote -> repo folder -> default_project).
+  Run with no command to show today's status.
+
+TASK COMMANDS
+  start <desc>        Begin a new task. Gets the next id (T1, T2, ... per day).
+                      Auto-pauses any running task in the SAME project.
+  pause  [id] [why]   Pause the running task (or the given id). Stops its clock.
+  resume [id]         Resume the most-recent paused/deferred task (or given id).
+  complete [id]       Finish a task: sum its time and, in a git repo, record the
+                      commits made during its window.
+  defer  [id] [why]   Set a task aside (e.g. blocked / picking it up another day).
+  log <note>          Attach a timestamped note to the running task.
+
+VIEW & ANALYSIS
+  status [date]       Per-task totals table for a day (default: today). Default cmd.
+  grid   [date]       Slot-by-slot schedule for a day (see SYMBOLS below).
+  report [flags]      Aggregate time across a date range, grouped by --by.
+  export [flags]      Dump raw events as csv / json / tsv over a date range.
+
+OTHER
+  config              Print the path to the active config file.
+  help                Show this help.
 
 FLAGS
-  --at HH:MM          Use a past time instead of now (backfill)
-  --project NAME      Override project detection (for non-git tasks)
-  --from / --to       Date range YYYY-MM-DD (report, export)
+  --at HH:MM          Act at a past time instead of now (24h). Backfills the grid.
+                      Chain across commands to reconstruct a whole day after the fact.
+  --project NAME      Override project detection. Use for non-git work, e.g.
+                      --project meetings / --project "maroc ventes" / --project admin.
+                      On start: where the task lives. On pause/complete/etc: scope.
+  --from D --to D     Inclusive date range YYYY-MM-DD (report, export). Default: today.
+  --by KEY            report grouping: project | task | day. Default: project.
+  --format FMT        export format: csv | json | tsv. Default: csv.
+
+STATUSES & GRID SYMBOLS
+  in-progress  >>     paused  --     completed  **     deferred  ~~     (idle blank)
+
+CONCURRENCY
+  Only one task per project runs at a time (starting/resuming auto-pauses the
+  previous one). Different projects CAN run at once — each is its own grid column.
+
+CONFIG  (~/.config/wj/config — created on first run)
+  shift_start / shift_end   working-day bounds for the grid          (09:00 / 19:00)
+  slot_minutes              grid time-step, i.e. the "jump"           (5)
+  round                     grid snapping: down | nearest             (down)
+  totals                    time summing: exact | slot               (exact)
+  default_project           project used outside a git repo          (admin)
+  git_tag                   record commits on complete: on | off     (on)
+
+EXAMPLES
+  wj start "Refactor auth" --project backend   # start tracking
+  wj log "extracted token service"             # note on the running task
+  wj pause                                      # pause it (heading into a meeting)
+  wj start "Standup" --project meetings         # a different, non-git project
+  wj complete --project meetings                # finish standup
+  wj resume                                     # back to the refactor (most-recent paused)
+  wj complete                                   # finish it; commits recorded
+  wj status                                     # today's totals
+  wj grid                                       # today's schedule
+  wj report --from 2026-06-01 --to 2026-06-30 --by project
+  wj export --format csv > june.csv
+
+  # Reconstruct a past morning retroactively:
+  wj start "Fixing auth" --at 09:00 --project backend
+  wj pause standup --at 09:30
+  wj complete --at 11:30 --project backend
 
 FILES
-  config :  ~/.config/wj/config        (or $WJ_CONFIG)
-  data   :  ~/.local/share/wj/         (or $WJ_DATA_DIR)
+  config :  ~/.config/wj/config          (override: $WJ_CONFIG)
+  data   :  ~/.local/share/wj/YYYY/MM/DD.tsv   (override: $WJ_DATA_DIR)
 EOF
 }
 
