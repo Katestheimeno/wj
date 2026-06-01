@@ -1,0 +1,582 @@
+#!/usr/bin/env bash
+#
+# wj — cross-project daily task & time tracker
+#
+# Source of truth: an append-only TSV event log (one file per day).
+# Everything else — status, grid, reports, exports — is derived by replaying it.
+#
+#   Event row:  timestamp \t task_id \t project \t event \t note
+#   Events:     start | pause | resume | complete | defer | log | commit
+#
+# Layout:
+#   ~/.config/wj/config                  settings   (override: $WJ_CONFIG)
+#   ~/.local/share/wj/YYYY/MM/DD.tsv     event log  (override: $WJ_DATA_DIR)
+#   ~/.local/share/wj/exports/           generated on demand
+#
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Defaults (overridable in the config file)
+# ---------------------------------------------------------------------------
+shift_start=09:00
+shift_end=19:00
+slot_minutes=5          # the configurable "jump"
+round=down              # down | nearest   (grid snapping only)
+totals=exact            # exact | slot     (how time totals are summed)
+default_project=admin   # used outside a git repo when no --project given
+git_tag=on              # on | off — attach commits in a task's window on complete
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+WJ_CONFIG="${WJ_CONFIG:-$CONFIG_HOME/wj/config}"
+WJ_DATA_DIR="${WJ_DATA_DIR:-$DATA_HOME/wj}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+die() { printf 'wj: %s\n' "$*" >&2; exit 1; }
+
+seed_config() {
+    mkdir -p "$(dirname "$WJ_CONFIG")"
+    cat >"$WJ_CONFIG" <<EOF
+# wj configuration — key=value, shell-sourced (quote values with spaces)
+
+# Working-day bounds for the grid view
+shift_start=$shift_start
+shift_end=$shift_end
+
+# The time "jump" between grid slots, in minutes
+slot_minutes=$slot_minutes
+
+# Grid snapping: down | nearest
+round=$round
+
+# How time totals are summed: exact | slot
+totals=$totals
+
+# Project used outside a git repo when no --project is given
+default_project=$default_project
+
+# Record commits in a task's window on complete: on | off
+git_tag=$git_tag
+EOF
+}
+
+load_config() {
+    [[ -f $WJ_CONFIG ]] || seed_config
+    # shellcheck disable=SC1090
+    source "$WJ_CONFIG"
+}
+
+# HH:MM -> minutes since midnight
+hm_to_min() {
+    local hm=$1 h m
+    h=${hm%%:*}; m=${hm##*:}
+    printf '%d' "$(( 10#$h * 60 + 10#$m ))"
+}
+
+# minutes since midnight -> HH:MM
+min_to_hm() { printf '%02d:%02d' "$(( $1 / 60 ))" "$(( $1 % 60 ))"; }
+
+# snap a minute value to a grid slot boundary (relative to shift_start)
+snap_min() {
+    local m=$1 start=$2 slot=$3 off rem
+    off=$(( m - start ))
+    (( off < 0 )) && { printf '%d' "$start"; return; }
+    rem=$(( off % slot ))
+    if [[ $round == nearest && $rem -ge $(( (slot + 1) / 2 )) ]]; then
+        printf '%d' "$(( start + off - rem + slot ))"
+    else
+        printf '%d' "$(( start + off - rem ))"
+    fi
+}
+
+# format a duration in minutes -> "1h05m" / "20m"
+fmt_dur() {
+    local mins=$1 h m
+    h=$(( mins / 60 )); m=$(( mins % 60 ))
+    if (( h > 0 )); then printf '%dh%02dm' "$h" "$m"; else printf '%dm' "$m"; fi
+}
+
+# detect project from git remote -> repo toplevel -> default, lowercased
+detect_project() {
+    local p
+    p=$(git remote get-url origin 2>/dev/null | sed 's#.*[/:]##; s/\.git$//') || true
+    if [[ -z $p ]] && git rev-parse --show-toplevel >/dev/null 2>&1; then
+        p=$(basename "$(git rev-parse --show-toplevel)")
+    fi
+    [[ -z $p ]] && p=$default_project
+    printf '%s' "$p" | tr '[:upper:]' '[:lower:]'
+}
+
+# day file path for a YYYY-MM-DD date
+day_file() {
+    local d=$1
+    printf '%s/%s/%s/%s.tsv' "$WJ_DATA_DIR" "${d:0:4}" "${d:5:2}" "${d:8:2}"
+}
+
+append_event() {
+    local ts=$1 id=$2 proj=$3 evt=$4 note=${5:-} file
+    file=$(day_file "${ts:0:10}")
+    mkdir -p "$(dirname "$file")"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$id" "$proj" "$evt" "$note" >>"$file"
+}
+
+# ---------------------------------------------------------------------------
+# Per-day replay queries
+# ---------------------------------------------------------------------------
+
+# highest existing T# in a day file (0 if none)
+max_task_id() {
+    local file=$1 ts id rest n max=0
+    [[ -f $file ]] || { echo 0; return; }
+    while IFS=$'\t' read -r ts id rest; do
+        n=${id#T}
+        [[ $n =~ ^[0-9]+$ ]] && (( n > max )) && max=$n
+    done <"$file"
+    echo "$max"
+}
+
+# the note of a task's `start` event (its description)
+task_desc() {
+    local file=$1 want=$2 ts id proj evt note
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ $id == "$want" && $evt == start ]] && { printf '%s' "$note"; return; }
+    done <"$file"
+}
+
+task_project() {
+    local file=$1 want=$2 ts id proj evt note
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ $id == "$want" ]] && { printf '%s' "$proj"; return; }
+    done <"$file"
+}
+
+task_start_time() {
+    local file=$1 want=$2 ts id proj evt note
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ $id == "$want" && $evt == start ]] && { printf '%s' "${ts:11:5}"; return; }
+    done <"$file"
+}
+
+# current status of a task by last status-affecting event
+task_status() {
+    local file=$1 want=$2 ts id proj evt note st=""
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ $id == "$want" ]] || continue
+        case $evt in
+            start|resume) st=in-progress ;;
+            pause)        st=paused ;;
+            defer)        st=deferred ;;
+            complete)     st=completed ;;
+        esac
+    done <"$file"
+    printf '%s' "$st"
+}
+
+# distinct task ids in a day file, in first-seen (numeric) order
+task_ids() {
+    local file=$1 ts id rest
+    [[ -f $file ]] || return 0
+    awk -F'\t' '!seen[$2]++ {print $2}' "$file"
+}
+
+# total active minutes for a task; arg3 = now-minute (cap for open intervals)
+task_minutes() {
+    local file=$1 want=$2 now_min=$3
+    local ts id proj evt note m active=0 open=0 total=0 slot=$slot_minutes
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ $id == "$want" ]] || continue
+        m=$(hm_to_min "${ts:11:5}")
+        case $evt in
+            start|resume)
+                (( active )) || { active=1; open=$m; } ;;
+            pause|complete|defer)
+                if (( active )); then
+                    total=$(( total + m - open )); active=0
+                fi ;;
+        esac
+    done <"$file"
+    (( active )) && total=$(( total + now_min - open ))
+    if [[ $totals == slot ]]; then
+        total=$(( (total + slot - 1) / slot * slot ))
+    fi
+    (( total < 0 )) && total=0
+    printf '%d' "$total"
+}
+
+# whether a task id appears in a day file
+task_exists() {
+    local file=$1 want=$2
+    [[ -f $file ]] || return 1
+    awk -F'\t' -v w="$want" '$2==w{f=1} END{exit f?0:1}' "$file"
+}
+
+# resolve a task by current state: mode=active (in-progress) | resumable (paused/deferred).
+# Returns the most-recently-transitioned matching task, optionally filtered by project.
+# Correctly handles several concurrently-active tasks across projects.
+find_task() {
+    local file=$1 mode=$2 proj=$3 ts id p evt note seq=0
+    [[ -f $file ]] || return 0
+    declare -A status=() lastseq=() pproj=()
+    while IFS=$'\t' read -r ts id p evt note; do
+        case $evt in
+            start|resume) status[$id]=active ;;
+            pause)        status[$id]=paused ;;
+            defer)        status[$id]=deferred ;;
+            complete)     status[$id]=completed ;;
+            *)            continue ;;
+        esac
+        seq=$(( seq + 1 )); lastseq[$id]=$seq; pproj[$id]=$p
+    done <"$file"
+    local best="" bestseq=-1 k ok
+    for k in "${!status[@]}"; do
+        ok=0
+        case $mode in
+            active)    [[ ${status[$k]} == active ]] && ok=1 ;;
+            resumable) [[ ${status[$k]} == paused || ${status[$k]} == deferred ]] && ok=1 ;;
+        esac
+        (( ok )) || continue
+        [[ -n $proj && ${pproj[$k]} != "$proj" ]] && continue
+        (( lastseq[$k] > bestseq )) && { best=$k; bestseq=${lastseq[$k]}; }
+    done
+    printf '%s' "$best"
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing — extract global flags, leave positionals in ARGS[]
+# ---------------------------------------------------------------------------
+AT=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"
+declare -a ARGS=()
+need_val() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
+parse_args() {
+    while (( $# )); do
+        case $1 in
+            --at)       need_val "$@"; AT=$2;       shift 2 ;;
+            --project)  need_val "$@"; PROJECT_OVERRIDE=$2; shift 2 ;;
+            --from)     need_val "$@"; FROM=$2;     shift 2 ;;
+            --to)       need_val "$@"; TO=$2;       shift 2 ;;
+            --format)   need_val "$@"; FORMAT=$2;   shift 2 ;;
+            --by)       need_val "$@"; BY=$2;       shift 2 ;;
+            --)         shift; while (( $# )); do ARGS+=("$1"); shift; done ;;
+            *)          ARGS+=("$1"); shift ;;
+        esac
+    done
+    [[ -z $AT || $AT =~ ^[0-9]{1,2}:[0-9]{2}$ ]] || die "--at must be HH:MM (got '$AT')"
+}
+
+TODAY=$(date +%Y-%m-%d)
+now_ts() {
+    if [[ -n $AT ]]; then printf '%sT%s' "$TODAY" "$AT"; else date +%Y-%m-%dT%H:%M; fi
+}
+now_min() {
+    if [[ -n $AT ]]; then hm_to_min "$AT"; else hm_to_min "$(date +%H:%M)"; fi
+}
+cur_project() {
+    if [[ -n $PROJECT_OVERRIDE ]]; then printf '%s' "$PROJECT_OVERRIDE"; else detect_project; fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_start() {
+    local desc=${ARGS[*]:-}
+    [[ -n $desc ]] || die "start needs a description"
+    local proj ts file id active
+    proj=$(cur_project); ts=$(now_ts); file=$(day_file "${ts:0:10}")
+    # auto-pause any in-progress task in the same project
+    active=$(find_task "$file" active "$proj")
+    [[ -n $active ]] && append_event "$ts" "$active" "$proj" pause "auto-paused (started new task)"
+    id="T$(( $(max_task_id "$file") + 1 ))"
+    append_event "$ts" "$id" "$proj" start "$desc"
+    printf '%s  %s  [%s]  started %s — %s\n' "$id" "${ts:11:5}" "$proj" "$id" "$desc"
+}
+
+cmd_pause() {
+    local ts file proj id reason
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; reason=${ARGS[*]:1}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" active "$proj"); reason=${ARGS[*]:-}; fi
+    [[ -n $id ]] || die "no in-progress task${PROJECT_OVERRIDE:+ in $proj} to pause"
+    append_event "$ts" "$id" "$(task_project "$file" "$id")" pause "$reason"
+    printf '%s  %s  paused%s\n' "$id" "${ts:11:5}" "${reason:+ — $reason}"
+}
+
+cmd_resume() {
+    local ts file proj id
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" resumable "$proj"); fi
+    [[ -n $id ]] || die "no paused/deferred task to resume"
+    local tproj; tproj=$(task_project "$file" "$id")
+    # auto-pause an in-progress task in that project first
+    local active; active=$(find_task "$file" active "$tproj")
+    [[ -n $active && $active != "$id" ]] && append_event "$ts" "$active" "$tproj" pause "auto-paused (resumed $id)"
+    append_event "$ts" "$id" "$tproj" resume ""
+    printf '%s  %s  resumed — %s\n' "$id" "${ts:11:5}" "$(task_desc "$file" "$id")"
+}
+
+cmd_defer() {
+    local ts file proj id reason
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; reason=${ARGS[*]:1}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" active "$proj"); reason=${ARGS[*]:-}; fi
+    [[ -n $id ]] || die "no task to defer (give a task id)"
+    append_event "$ts" "$id" "$(task_project "$file" "$id")" defer "$reason"
+    printf '%s  %s  deferred%s\n' "$id" "${ts:11:5}" "${reason:+ — $reason}"
+}
+
+cmd_log() {
+    local ts file proj id note
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    note=${ARGS[*]:-}
+    [[ -n $note ]] || die "log needs a note"
+    id=$(find_task "$file" active "$proj")
+    [[ -n $id ]] || die "no active task to log against"
+    append_event "$ts" "$id" "$(task_project "$file" "$id")" log "$note"
+    printf '%s  %s  note added\n' "$id" "${ts:11:5}"
+}
+
+cmd_complete() {
+    local ts file proj id
+    ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" active "$proj"); fi
+    [[ -n $id ]] || die "no in-progress task${PROJECT_OVERRIDE:+ in $proj} to complete"
+    local tproj; tproj=$(task_project "$file" "$id")
+    append_event "$ts" "$id" "$tproj" complete ""
+    local mins; mins=$(task_minutes "$file" "$id" "$(now_min)")
+    printf '%s  %s  completed — %s\n' "$id" "${ts:11:5}" "$(fmt_dur "$mins")"
+    # record commits in the task's window
+    if [[ $git_tag == on ]] && git rev-parse --git-dir >/dev/null 2>&1; then
+        local start; start=$(task_start_time "$file" "$id")
+        local since="${ts:0:10} ${start}" until="${ts:0:10} ${ts:11:5}"
+        local n=0 h s
+        while IFS=$'\t' read -r h s; do
+            [[ -z $h ]] && continue
+            append_event "$ts" "$id" "$tproj" commit "$h $s"; n=$(( n + 1 ))
+        done < <(git log --since="$since" --until="$until" --format='%h%x09%s' 2>/dev/null || true)
+        (( n > 0 )) && printf '      %d commit(s) recorded\n' "$n"
+    fi
+}
+
+cmd_status() {
+    local d=${ARGS[0]:-$TODAY} file ids id nm
+    file=$(day_file "$d")
+    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
+    if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$(hm_to_min "$shift_end"); fi
+    printf '\nTasks — %s\n\n' "$d"
+    printf '%-4s  %-16s  %-12s  %-7s  %s\n' ID PROJECT STATUS TIME DESCRIPTION
+    printf '%-4s  %-16s  %-12s  %-7s  %s\n' ---- ---------------- ------------ ------- -----------
+    while read -r id; do
+        [[ -z $id ]] && continue
+        local p st mins desc
+        p=$(task_project "$file" "$id")
+        st=$(task_status "$file" "$id")
+        mins=$(task_minutes "$file" "$id" "$nm")
+        desc=$(task_desc "$file" "$id")
+        printf '%-4s  %-16.16s  %-12s  %-7s  %s\n' "$id" "$p" "$st" "$(fmt_dur "$mins")" "$desc"
+    done < <(task_ids "$file")
+    # day total
+    local tot=0
+    while read -r id; do
+        [[ -z $id ]] && continue
+        tot=$(( tot + $(task_minutes "$file" "$id" "$nm") ))
+    done < <(task_ids "$file")
+    printf '\nTotal tracked: %s\n\n' "$(fmt_dur "$tot")"
+}
+
+cmd_grid() {
+    local d=${ARGS[0]:-$TODAY} file
+    file=$(day_file "$d")
+    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
+    local start end slot
+    start=$(hm_to_min "$shift_start"); end=$(hm_to_min "$shift_end"); slot=$slot_minutes
+    local nm
+    if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$end; fi
+    (( nm > end )) && nm=$end
+
+    # collect ids
+    local -a ids=()
+    while read -r i; do [[ -n $i ]] && ids+=("$i"); done < <(task_ids "$file")
+    (( ${#ids[@]} )) || { printf 'No tasks for %s\n' "$d"; return; }
+
+    # build cell map  CELL[id:slotmin]=symbol
+    declare -A CELL=()
+    local id
+    for id in "${ids[@]}"; do
+        local ts xid proj evt note m active=0 open=0 s
+        while IFS=$'\t' read -r ts xid proj evt note; do
+            [[ $xid == "$id" ]] || continue
+            m=$(snap_min "$(hm_to_min "${ts:11:5}")" "$start" "$slot")
+            case $evt in
+                start|resume) (( active )) || { active=1; open=$m; } ;;
+                pause|complete|defer)
+                    if (( active )); then
+                        for (( s=open; s<m; s+=slot )); do CELL[$id:$s]='>>'; done
+                        active=0
+                    fi
+                    case $evt in pause) CELL[$id:$m]='--';; complete) CELL[$id:$m]='**';; defer) CELL[$id:$m]='~~';; esac ;;
+            esac
+        done <"$file"
+        if (( active )); then
+            local cap; cap=$(snap_min "$nm" "$start" "$slot")
+            for (( s=open; s<=cap; s+=slot )); do CELL[$id:$s]='>>'; done
+        fi
+    done
+
+    # header
+    printf '\nSchedule — %s   (legend: >> active  -- paused  ** done  ~~ deferred)\n\n' "$d"
+    printf '| Time  '
+    for id in "${ids[@]}"; do printf '| %-3s' "$id"; done
+    printf '|\n|-------'
+    for id in "${ids[@]}"; do printf '|----'; done
+    printf '|\n'
+    local t
+    for (( t=start; t<=end; t+=slot )); do
+        printf '| %s ' "$(min_to_hm "$t")"
+        for id in "${ids[@]}"; do printf '| %-3s' "${CELL[$id:$t]:-}"; done
+        printf '|\n'
+    done
+    printf '\n'
+    # legend of task ids
+    for id in "${ids[@]}"; do
+        printf '%-4s %-14s %s\n' "$id" "[$(task_project "$file" "$id")]" "$(task_desc "$file" "$id")"
+    done
+    printf '\n'
+}
+
+# iterate dates from $1 to $2 inclusive (YYYY-MM-DD), echo each
+iter_dates() {
+    local d=$1 end=$2
+    while [[ $d < $end || $d == "$end" ]]; do
+        echo "$d"
+        d=$(date -d "$d +1 day" +%Y-%m-%d)
+    done
+}
+
+cmd_report() {
+    local from=${FROM:-$TODAY} to=${TO:-$TODAY}
+    declare -A AGG=()
+    local d file id nm key
+    while read -r d; do
+        file=$(day_file "$d")
+        [[ -f $file ]] || continue
+        nm=$(hm_to_min "$shift_end")
+        [[ $d == "$TODAY" ]] && nm=$(now_min)
+        while read -r id; do
+            [[ -z $id ]] && continue
+            case $BY in
+                project) key=$(task_project "$file" "$id") ;;
+                task)    key="$id  $(task_desc "$file" "$id")" ;;
+                day)     key=$d ;;
+                *)       die "--by must be project|task|day" ;;
+            esac
+            AGG[$key]=$(( ${AGG[$key]:-0} + $(task_minutes "$file" "$id" "$nm") ))
+        done < <(task_ids "$file")
+    done < <(iter_dates "$from" "$to")
+    printf '\nReport %s..%s  by %s\n\n' "$from" "$to" "$BY"
+    local k tot=0
+    for k in "${!AGG[@]}"; do tot=$(( tot + AGG[$k] )); done
+    for k in "${!AGG[@]}"; do printf '%s\t%s\n' "$(fmt_dur "${AGG[$k]}")" "$k"; done \
+        | sort -t$'\t' -k2 | awk -F'\t' '{printf "  %-8s  %s\n", $1, $2}'
+    printf '\n  %-8s  TOTAL\n\n' "$(fmt_dur "$tot")"
+}
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+csv_escape()  { printf '"%s"' "$(printf '%s' "$1" | sed 's/"/""/g')"; }
+
+cmd_export() {
+    local from=${FROM:-$TODAY} to=${TO:-$TODAY} d file
+    case $FORMAT in
+        csv)  printf 'timestamp,task_id,project,event,note\n' ;;
+        tsv)  printf 'timestamp\ttask_id\tproject\tevent\tnote\n' ;;
+        json) printf '[' ;;
+        *)    die "--format must be csv|json|tsv" ;;
+    esac
+    local first=1 ts id proj evt note
+    while read -r d; do
+        file=$(day_file "$d")
+        [[ -f $file ]] || continue
+        while IFS=$'\t' read -r ts id proj evt note; do
+            case $FORMAT in
+                tsv)  printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$id" "$proj" "$evt" "$note" ;;
+                csv)  printf '%s,%s,%s,%s,%s\n' \
+                        "$(csv_escape "$ts")" "$(csv_escape "$id")" "$(csv_escape "$proj")" \
+                        "$(csv_escape "$evt")" "$(csv_escape "$note")" ;;
+                json)
+                    (( first )) && printf '\n' || printf ',\n'; first=0
+                    printf '  {"timestamp":"%s","task_id":"%s","project":"%s","event":"%s","note":"%s"}' \
+                        "$(json_escape "$ts")" "$(json_escape "$id")" "$(json_escape "$proj")" \
+                        "$(json_escape "$evt")" "$(json_escape "$note")" ;;
+            esac
+        done <"$file"
+    done < <(iter_dates "$from" "$to")
+    [[ $FORMAT == json ]] && { (( first )) && printf ']\n' || printf '\n]\n'; }
+}
+
+cmd_help() {
+    cat <<'EOF'
+wj — cross-project daily task & time tracker
+
+USAGE
+  wj <command> [args] [--at HH:MM] [--project NAME]
+
+COMMANDS
+  start <desc>        Start a new task (auto-pauses active task in same project)
+  pause  [id] [why]   Pause active task (or given id)
+  resume [id]         Resume most-recent paused/deferred task (or given id)
+  complete [id]       Complete a task; sum time; record git commits in its window
+  defer  [id] [why]   Set a task aside
+  log <note>          Add a timestamped note to the active task
+  status [date]       Compact totals table (default command)
+  grid   [date]       Render the slot-by-slot schedule view
+  report [--from D --to D] [--by project|task|day]
+  export [--from D --to D] [--format csv|json|tsv]
+  config              Print the active config file path
+  help                This help
+
+FLAGS
+  --at HH:MM          Use a past time instead of now (backfill)
+  --project NAME      Override project detection (for non-git tasks)
+  --from / --to       Date range YYYY-MM-DD (report, export)
+
+FILES
+  config :  ~/.config/wj/config        (or $WJ_CONFIG)
+  data   :  ~/.local/share/wj/         (or $WJ_DATA_DIR)
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+    load_config
+    local cmd=${1:-status}
+    [[ $# -gt 0 ]] && shift || true
+    parse_args "$@"
+    case $cmd in
+        start)    cmd_start ;;
+        pause)    cmd_pause ;;
+        resume)   cmd_resume ;;
+        complete) cmd_complete ;;
+        defer)    cmd_defer ;;
+        log)      cmd_log ;;
+        status)   cmd_status ;;
+        grid)     cmd_grid ;;
+        report)   cmd_report ;;
+        export)   cmd_export ;;
+        config)   printf '%s\n' "$WJ_CONFIG" ;;
+        help|-h|--help) cmd_help ;;
+        *)        die "unknown command: $cmd (try 'wj help')" ;;
+    esac
+}
+
+main "$@"
