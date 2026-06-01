@@ -1,1 +1,10 @@
 .claude/
+
+# Personal, un-pushed notes
+RELEASING.local.md
+
+# makepkg build artifacts (generated under packaging/aur)
+packaging/aur/pkg/
+packaging/aur/src/
+packaging/aur/*.pkg.tar.zst
+packaging/aur/*.tar.gz

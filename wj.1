@@ -1,0 +1,182 @@
+.TH WJ 1 "2026" "wj 0.1.0" "User Commands"
+.SH NAME
+wj \- cross-project daily task & time tracker
+.SH SYNOPSIS
+.B wj
+.RI [ command ]
+.RI [ args ]
+.RI [ flags ]
+.SH DESCRIPTION
+.B wj
+tracks what you work on across every project from one command line. Each
+action appends to an immutable per-day TSV event log; status tables, the
+schedule grid, the multi-day gantt, reports and exports are all
+.I derived
+by replaying that log, so your data stays plain, greppable and easy to analyse.
+.PP
+The project is auto-detected from the git remote, falling back to the repository
+folder name, then to
+.IR default_project .
+Run with no command to show today's status (or launch the UI when
+.I interface
+is set to
+.IR ui ).
+.SH TASK COMMANDS
+.TP
+.BI "start " desc
+Begin a new task; it gets the next id (T1, T2, ... per day). Auto-pauses any
+running task in the same project.
+.TP
+.BI "pause " "[id] [why]"
+Pause the running task (or the given id). Stops its clock.
+.TP
+.BI "resume " [id]
+Resume the most-recent paused/deferred task (or the given id).
+.TP
+.BI "complete " [id]
+Finish a task: sum its time and, in a git repo, record the commits made during
+its window.
+.TP
+.BI "defer " "[id] [why]"
+Set a task aside (blocked, or to pick up another day).
+.TP
+.BI "log " note
+Attach a timestamped note to the running task.
+.TP
+.BI "amend " "[id] desc"
+Replace a task's description (running task, or given id). Appends an event;
+never rewrites history.
+.TP
+.BI "move " "[id] proj"
+Re-home a task to another project (fix wrong auto-detection).
+.TP
+.BI "cancel " [id]
+Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw
+log for audit).
+.SH VIEW & ANALYSIS
+.TP
+.B ls
+List currently-open tasks. Today by default;
+.B --days N
+scans the last N days.
+.TP
+.BI "show " id
+Full timeline of one task. Today by default;
+.B --date
+for a past day.
+.TP
+.BI "status " [date]
+Per-task totals table for a day (default: today). The default command.
+.TP
+.BI "grid " [date]
+Slot-by-slot schedule for a day.
+.TP
+.B gantt
+Multi-day overview: rows (\fB--by\fR project|task) by days of tracked time.
+Default range: the last 7 days through \fB--to\fR.
+.TP
+.B report
+Aggregate time across a date range, grouped by \fB--by\fR.
+.TP
+.B export
+Dump raw events as csv / json / tsv over a date range.
+.PP
+The read views
+.RB ( status ", " ls ", " show ", " grid ", " gantt )
+also accept
+.B --json
+for a stable machine-readable contract \(em this is what the UI front-end consumes.
+.SH OTHER
+.TP
+.B ui
+Launch the wj-tui front-end (requires the
+.B wj-tui
+binary). A bare
+.B wj
+launches it too when
+.I interface=ui
+in the config.
+.TP
+.B config
+Print the path to the active config file.
+.TP
+.BI "completion " SHELL
+Print a completion script:
+.B completion bash
+or
+.BR "completion zsh" .
+.TP
+.B version
+Print the wj version (also \fB--version\fR, \fB-V\fR).
+.TP
+.B help
+Show the built-in help.
+.SH FLAGS
+.TP
+.BI "--at " TIME
+Act at a past time instead of now. Flexible format: 9, 930, 0930, 9:30, 9.30,
+9am, 9pm, 9:30pm all normalise to HH:MM.
+.TP
+.BI "--date " YYYY-MM-DD
+Act on another day (alias \fB--on\fR). Combine with \fB--at\fR to reconstruct a
+past day; defaults the day for status/grid.
+.TP
+.BI "--days " N
+ls: how many days back to scan. Default 1 (today).
+.TP
+.BI "--project " NAME
+Override project detection (e.g. for non-git work).
+.TP
+.BI "--from " D ", --to " D
+Inclusive date range YYYY-MM-DD (report, export, gantt).
+.TP
+.BI "--by " KEY
+Grouping: project | task | day (report); project | task (gantt).
+.TP
+.BI "--format " FMT
+export format: csv | json | tsv. Default csv.
+.TP
+.B --json
+Emit a machine-readable view (status, ls, show, grid, gantt).
+.SH CONFIGURATION
+Config lives at
+.I ~/.config/wj/config
+(seeded on first run; key=value, shell-sourced). Keys:
+.IR shift_start ", " shift_end " (working-day bounds), "
+.I slot_minutes
+(grid step),
+.I round
+(down|nearest),
+.I totals
+(exact|slot),
+.I default_project ", "
+.I git_tag
+(on|off), and
+.I interface
+(minimal|ui \(em the front-end for a bare
+.BR wj ).
+.SH FILES
+.TP
+.I ~/.config/wj/config
+Settings (override with \fB$WJ_CONFIG\fR).
+.TP
+.I ~/.local/share/wj/YYYY/MM/DD.tsv
+The append-only event log (override with \fB$WJ_DATA_DIR\fR).
+.SH EXAMPLES
+.PP
+.nf
+wj start "Refactor auth" --project backend
+wj log "extracted token service"
+wj pause
+wj resume
+wj complete
+wj status
+wj gantt --from 2026-06-01 --to 2026-06-07 --by project
+wj export --format csv > june.csv
+.fi
+.SH SEE ALSO
+Full documentation and the optional terminal UI:
+.UR https://github.com/Katestheimeno/wj
+.UE
+.SH AUTHOR
+Katestheimeno

@@ -4,6 +4,11 @@ A single, dependency-free bash CLI for tracking what you work on across every
 project. Start, pause, resume, complete and defer tasks; see where your time
 went on a slot-by-slot grid; and export everything to CSV/JSON for analysis.
 
+An **optional** terminal UI (`wj-tui`) adds a multi-day Gantt overview with
+project colors and an intraday drill-down — see [Terminal UI](#terminal-ui-optional).
+The bash CLI is fully self-contained; the UI is a thin front-end over it and is
+never required.
+
 The source of truth is an **append-only, per-day TSV event log**. Every other
 view — status tables, the schedule grid, reports, exports — is *derived* by
 replaying that log. Your data stays plain text: greppable, diffable, and trivial
@@ -44,8 +49,11 @@ Total tracked: 1h15m
   whole day after the fact.
 - **Exportable** — dump the raw event log to `csv`, `json`, or `tsv`, or roll it
   up with `report`.
-- **No dependencies** — pure bash + coreutils + `git` (only used when tagging
-  commits). No `jq`, no database.
+- **No dependencies** — the CLI is pure bash + coreutils + `git` (only used when
+  tagging commits). No `jq`, no database. (The optional `wj-tui` front-end is a
+  separate, statically-linked Go binary — needed only if you opt into the UI.)
+- **Optional terminal UI** — a lazygit-style `wj-tui` with a colored multi-day
+  Gantt and intraday drill-down, driven entirely by the CLI's `--json` output.
 
 ## Install
 
@@ -74,6 +82,13 @@ curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | 
 |---|---|---|
 | `WJ_BIN_DIR` | `~/.local/bin` | Where to install/remove the binary. |
 | `WJ_REF` | `main` | Git branch/tag to install from. |
+| `WJ_WITH_UI` | `0` | Set to `1` (or pass `--with-ui`) to also build the UI. |
+
+To install the optional terminal UI as well (needs [Go](https://go.dev/dl)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | bash -s -- --with-ui
+```
 
 ### Manual install
 
@@ -81,6 +96,9 @@ curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | 
 git clone https://github.com/Katestheimeno/wj.git && cd wj
 chmod +x wj
 ln -s "$PWD/wj" ~/.local/bin/wj          # or: sudo ln -s "$PWD/wj" /usr/local/bin/wj
+
+# optional UI (needs Go):
+make install-ui                          # builds tui/ and installs ~/.local/bin/wj-tui
 ```
 
 First run seeds a config file at `~/.config/wj/config`. Data is written under
@@ -99,24 +117,28 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `wj amend [id] <desc>` | Replace a task's description (running task, or a given id). Appends an event — history is never rewritten. |
 | `wj move [id] <proj>` | Re-home a task to another project (fix wrong auto-detection). |
 | `wj cancel [id]` | Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw log for audit). |
+| `wj ls` | List currently-open tasks (in-progress / paused / deferred). Today by default; `--days N` scans the last N days (adds a DATE column) to catch timers left running earlier. |
+| `wj show <id>` | Full timeline of one task: start, notes, pauses/resumes, renames, moves, recorded commits, total time and status. Today by default; `--date` for a past day. |
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
 | `wj grid [date]` | Slot-by-slot schedule for a day. |
 | `wj report [flags]` | Aggregate time over a date range, grouped by `--by`. |
 | `wj export [flags]` | Dump raw events as csv/json/tsv over a date range. |
 | `wj completion <shell>` | Print a shell-completion script (`bash` or `zsh`). |
 | `wj config` | Print the active config file path. |
+| `wj version` | Print the version (also `--version`, `-V`). |
 | `wj help` | Full help. |
 
 ### Flags
 
 | Flag | Applies to | Purpose |
 |---|---|---|
-| `--at HH:MM` | start, pause, resume, complete, defer, log, amend, move, cancel, status, grid | Act at a past time instead of now (24h). Backfills the grid. |
-| `--date YYYY-MM-DD` | any write command + status, grid | Act on another day, not today (alias `--on`). Combine with `--at` to reconstruct any past day. |
+| `--at TIME` | start, pause, resume, complete, defer, log, amend, move, cancel, status, grid, show | Act at a past time instead of now. Flexible format — `9`, `930`, `0930`, `9:30`, `9.30`, `9am`, `9pm`, `9:30pm` all normalise to `HH:MM`. Backfills the grid. |
+| `--date YYYY-MM-DD` | any write command + status, grid, ls, show | Act on another day, not today (alias `--on`). Combine with `--at` to reconstruct any past day. On a past day **without** `--at`, the time is inferred from that day's last event (or `shift_start`) and the inference is printed. |
 | `--project NAME` | start (where the task lives); pause/complete/defer/log/resume/amend/cancel (scope) | Override project detection. Quote names with spaces. |
 | `--from D --to D` | report, export | Inclusive date range `YYYY-MM-DD`. Default: today. |
 | `--by KEY` | report | Group by `project` \| `task` \| `day`. Default: `project`. |
 | `--format FMT` | export | `csv` \| `json` \| `tsv`. Default: `csv`. |
+| `--days N` | ls | How many days back to scan for open tasks. Default: `1` (today). |
 
 If you omit `--project` on `pause`/`complete`/`log`/`amend`/`move`/`cancel`, the
 command acts on whatever is currently running. Pass `--project` to scope it to one
@@ -178,6 +200,7 @@ display, independent of how totals are summed.
 | `totals` | `exact` | Time summing: `exact` minutes or `slot`-rounded. |
 | `default_project` | `admin` | Project used outside a git repo when no `--project` is given. |
 | `git_tag` | `on` | Record commits in a task's window on `complete`. |
+| `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 
 Environment overrides:
 
@@ -194,6 +217,41 @@ Environment overrides:
 
 Project detection order: git remote basename → repo folder name → `default_project`
 (lowercased).
+
+## Terminal UI (optional)
+
+`wj-tui` is an optional, lazygit-style front-end. It renders the event log via
+the CLI's `--json` output and triggers actions by calling `wj` — so the bash CLI
+stays the single source of truth, and the UI can never disagree with it.
+
+The layout fills the terminal width, panels scroll when content is tall, a
+header shows the currently-running task with a live-ticking clock, and `?` opens
+a full keybinding overlay. Three stacked panels, navigated with `Tab`:
+
+- **Range** — a multi-day Gantt: one row per project (or task), one column per
+  day, with project-colored intensity bars. `←/→` pick a day, `[`/`]` shift the
+  window, `t` jumps to today, `1`/`7`/`3` set the span (1/7/30 days), `b`
+  toggles project/task rows.
+- **Day** — the focused day's intraday Gantt: a time axis from `shift_start` to
+  `shift_end` with a `now ▲` marker and colored segment bars per task.
+- **Timeline** — the selected task's full event history.
+
+Mutations run the same commands as the CLI, on the selected task: `s` start,
+`p` pause, `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥`
+project autocomplete), `l` log a note, `x` cancel (with a confirm). Acting on a
+**past** day first prompts for a time (`--at`), so
+an edit can't collapse to a zero-length interval. Colors are assigned per project
+(stable across days, including `--by task` rows) and respect `NO_COLOR`.
+
+```sh
+make install-ui            # build & install wj-tui (needs Go)
+wj ui                      # launch it explicitly
+# …or set `interface=ui` in the config so a bare `wj` opens it.
+```
+
+Install it via `--with-ui` (see [Install](#install)). If `wj-tui` isn't present,
+`interface=ui` silently falls back to the status table, and `wj ui` prints a
+clear error — the CLI never depends on it.
 
 ## Analysis & export
 

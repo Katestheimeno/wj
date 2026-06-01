@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bash:
+    name: Lint the bash CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: bash -n wj && bash -n install.sh
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          additional_files: install.sh
+          scandir: '.'
+          # wj uses bashisms intentionally; check as bash
+        env:
+          SHELLCHECK_OPTS: -s bash -S warning
+
+  go:
+    name: Build & test wj-tui
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache-dependency-path: tui/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo 'run gofmt -w .'; exit 1; }
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+      - name: build
+        run: go build -trimpath -ldflags="-s -w -X main.version=ci" -o /tmp/wj-tui .

@@ -15,6 +15,8 @@
 #
 set -uo pipefail
 
+WJ_VERSION="0.1.0"
+
 # ---------------------------------------------------------------------------
 # Defaults (overridable in the config file)
 # ---------------------------------------------------------------------------
@@ -25,6 +27,7 @@ round=down              # down | nearest   (grid snapping only)
 totals=exact            # exact | slot     (how time totals are summed)
 default_project=admin   # used outside a git repo when no --project given
 git_tag=on              # on | off — attach commits in a task's window on complete
+interface=minimal       # minimal | ui — bare `wj` / `wj ui` launch the wj-tui front-end
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -38,6 +41,13 @@ WJ_DATA_DIR="${WJ_DATA_DIR:-$DATA_HOME/wj}"
 # Helpers
 # ---------------------------------------------------------------------------
 die() { printf 'wj: %s\n' "$*" >&2; exit 1; }
+
+# absolute path to this script, so wj-tui can invoke the exact same wj that
+# launched it rather than relying on PATH order
+self_path() {
+    local s=${BASH_SOURCE[0]}
+    readlink -f -- "$s" 2>/dev/null || printf '%s' "$s"
+}
 
 seed_config() {
     mkdir -p "$(dirname "$WJ_CONFIG")"
@@ -62,6 +72,11 @@ default_project=$default_project
 
 # Record commits in a task's window on complete: on | off
 git_tag=$git_tag
+
+# Front-end for bare \`wj\` and \`wj ui\`: minimal | ui
+# minimal -> today's status table (the classic behaviour)
+# ui      -> launch the wj-tui binary if installed, else fall back to minimal
+interface=$interface
 EOF
 }
 
@@ -80,6 +95,37 @@ hm_to_min() {
 
 # minutes since midnight -> HH:MM
 min_to_hm() { printf '%02d:%02d' "$(( $1 / 60 ))" "$(( $1 % 60 ))"; }
+
+# normalise a loose time string to canonical HH:MM on stdout; non-zero on failure.
+# accepts: 9  09  930  0930  9:30  9.30  9am  9pm  9:30pm  12am  12pm
+normalize_time() {
+    local raw h m ap=""
+    raw=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    case $raw in
+        *am) ap=am; raw=${raw%am} ;;
+        *pm) ap=pm; raw=${raw%pm} ;;
+    esac
+    raw=${raw//./:}
+    if [[ $raw == *:* ]]; then
+        h=${raw%%:*}; m=${raw##*:}
+    else
+        case ${#raw} in
+            1|2) h=$raw;        m=0 ;;          # 9 / 09
+            3)   h=${raw:0:1};  m=${raw:1:2} ;; # 930  -> 9:30
+            4)   h=${raw:0:2};  m=${raw:2:2} ;; # 0930 -> 09:30
+            *)   return 1 ;;
+        esac
+    fi
+    [[ $h =~ ^[0-9]+$ && $m =~ ^[0-9]+$ ]] || return 1
+    h=$(( 10#$h )); m=$(( 10#$m ))
+    if [[ -n $ap ]]; then
+        (( h >= 1 && h <= 12 )) || return 1
+        [[ $ap == pm && $h != 12 ]] && h=$(( h + 12 ))
+        [[ $ap == am && $h == 12 ]] && h=0
+    fi
+    (( h >= 0 && h < 24 && m >= 0 && m < 60 )) || return 1
+    printf '%02d:%02d' "$h" "$m"
+}
 
 # snap a minute value to a grid slot boundary (relative to shift_start)
 snap_min() {
@@ -269,7 +315,7 @@ find_task() {
 # ---------------------------------------------------------------------------
 # Argument parsing — extract global flags, leave positionals in ARGS[]
 # ---------------------------------------------------------------------------
-AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"
+AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; JSON=0
 declare -a ARGS=()
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
 parse_args() {
@@ -282,23 +328,50 @@ parse_args() {
             --to)       need_val "$@"; TO=$2;       shift 2 ;;
             --format)   need_val "$@"; FORMAT=$2;   shift 2 ;;
             --by)       need_val "$@"; BY=$2;       shift 2 ;;
+            --days)     need_val "$@"; DAYS=$2;     shift 2 ;;
+            --json)     JSON=1;                     shift ;;
             --)         shift; while (( $# )); do ARGS+=("$1"); shift; done ;;
             *)          ARGS+=("$1"); shift ;;
         esac
     done
-    [[ -z $AT || $AT =~ ^[0-9]{1,2}:[0-9]{2}$ ]] || die "--at must be HH:MM (got '$AT')"
+    if [[ -n $AT ]]; then
+        local norm
+        norm=$(normalize_time "$AT") || die "--at: cannot parse '$AT' (examples: 9, 930, 9:30, 9pm, 9.30)"
+        AT=$norm
+    fi
     [[ -z $ON || $ON =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "--date must be YYYY-MM-DD (got '$ON')"
 }
 
 TODAY=$(date +%Y-%m-%d)
-now_ts() {
-    local d=${ON:-$TODAY} t
-    if [[ -n $AT ]]; then t=$AT; else t=$(date +%H:%M); fi
-    printf '%sT%s' "$d" "$t"
+
+# last event's HH:MM in a day file ("" if none)
+last_event_time() {
+    local file=$1 ts rest last=""
+    [[ -f $file ]] || return 0
+    while IFS=$'\t' read -r ts rest; do
+        [[ -n $ts ]] && last=${ts:11:5}
+    done <"$file"
+    printf '%s' "$last"
 }
-now_min() {
-    if [[ -n $AT ]]; then hm_to_min "$AT"; else hm_to_min "$(date +%H:%M)"; fi
+
+# effective HH:MM for an action:
+#   --at given            -> that time
+#   past --date, no --at  -> continue from the day's last event (else shift_start),
+#                            with a one-time note so the inference is never silent
+#   otherwise             -> now
+INFER_NOTED=0
+eff_time() {
+    if [[ -n $AT ]]; then printf '%s' "$AT"; return; fi
+    if [[ -n $ON && $ON != "$TODAY" ]]; then
+        local t; t=$(last_event_time "$(day_file "$ON")")
+        [[ -n $t ]] || t=$shift_start
+        (( INFER_NOTED )) || { printf 'wj: no --at; using %s for %s\n' "$t" "$ON" >&2; INFER_NOTED=1; }
+        printf '%s' "$t"; return
+    fi
+    date +%H:%M
 }
+now_ts()  { printf '%sT%s' "${ON:-$TODAY}" "$(eff_time)"; }
+now_min() { hm_to_min "$(eff_time)"; }
 cur_project() {
     if [[ -n $PROJECT_OVERRIDE ]]; then printf '%s' "$PROJECT_OVERRIDE"; else detect_project; fi
 }
@@ -425,15 +498,105 @@ cmd_complete() {
             [[ -z $h ]] && continue
             append_event "$ts" "$id" "$tproj" commit "$h $s"; n=$(( n + 1 ))
         done < <(git log --since="$since" --until="$until" --format='%h%x09%s' 2>/dev/null || true)
-        (( n > 0 )) && printf '      %d commit(s) recorded\n' "$n"
+        # NB: use an `if`, not `(( n>0 )) && printf` — as the function's last
+        # statement the latter returns 1 when n==0, making a successful
+        # `complete` exit non-zero (common: a task with no commits in its window).
+        if (( n > 0 )); then printf '      %d commit(s) recorded\n' "$n"; fi
     fi
+}
+
+# list open tasks (last event not complete/cancel).
+#   wj ls            -> today (or --date) only
+#   wj ls --days N   -> scan the last N days, with a DATE column
+cmd_ls() {
+    local days=${DAYS:-1} base=${ON:-$TODAY}
+    [[ $days =~ ^[0-9]+$ && $days -ge 1 ]] || die "--days must be a positive integer"
+    local wide=0; (( days > 1 )) && wide=1
+
+    local -a dates=(); local d=$base i
+    for (( i=0; i<days; i++ )); do dates+=("$d"); d=$(date -d "$d -1 day" +%Y-%m-%d); done
+
+    printf '\nOpen tasks'
+    if (( wide )); then printf ' — last %d days (through %s)\n\n' "$days" "$base"
+    else printf ' — %s\n\n' "$base"; fi
+    if (( wide )); then
+        printf '%-10s  %-4s  %-16s  %-12s  %-7s  %s\n' DATE ID PROJECT STATUS TIME DESCRIPTION
+        printf '%-10s  %-4s  %-16s  %-12s  %-7s  %s\n' ---------- ---- ---------------- ------------ ------- -----------
+    else
+        printf '%-4s  %-16s  %-12s  %-7s  %s\n' ID PROJECT STATUS TIME DESCRIPTION
+        printf '%-4s  %-16s  %-12s  %-7s  %s\n' ---- ---------------- ------------ ------- -----------
+    fi
+
+    local found=0 dd file id nm st p mins desc
+    for dd in "${dates[@]}"; do
+        file=$(day_file "$dd")
+        [[ -f $file ]] || continue
+        if [[ $dd == "$TODAY" ]]; then nm=$(hm_to_min "$(date +%H:%M)"); else nm=$(hm_to_min "$shift_end"); fi
+        while read -r id; do
+            [[ -z $id ]] && continue
+            st=$(task_status "$file" "$id")
+            case $st in in-progress|paused|deferred) ;; *) continue ;; esac
+            p=$(task_project "$file" "$id")
+            mins=$(task_minutes "$file" "$id" "$nm")
+            desc=$(task_desc "$file" "$id")
+            if (( wide )); then
+                printf '%-10s  %-4s  %-16.16s  %-12s  %-7s  %s\n' "$dd" "$id" "$p" "$st" "$(fmt_dur "$mins")" "$desc"
+            else
+                printf '%-4s  %-16.16s  %-12s  %-7s  %s\n' "$id" "$p" "$st" "$(fmt_dur "$mins")" "$desc"
+            fi
+            found=1
+        done < <(task_ids "$file")
+    done
+    (( found )) || printf '  (none)\n'
+    printf '\n'
+}
+
+# full timeline of one task (today by default; --date for a past day)
+cmd_show() {
+    local d=${ON:-$TODAY} id=${ARGS[0]:-} file
+    [[ -n $id ]] || die "show needs a task id (e.g. wj show T2)"
+    [[ $id =~ ^T[0-9]+$ ]] || die "not a task id: $id"
+    file=$(day_file "$d")
+    task_exists "$file" "$id" || die "no such task on $d: $id"
+    local nm
+    if [[ $d == "$TODAY" ]]; then nm=$(hm_to_min "$(date +%H:%M)"); else nm=$(hm_to_min "$shift_end"); fi
+    (( JSON )) && { json_show "$d" "$file" "$id" "$nm"; return; }
+    local proj st mins desc
+    proj=$(task_project "$file" "$id")
+    st=$(task_status "$file" "$id")
+    mins=$(task_minutes "$file" "$id" "$nm")
+    desc=$(task_desc "$file" "$id")
+    printf '\n%s  [%s]  %s\n' "$id" "$proj" "$desc"
+    printf '%s · %s · %s\n\n' "$d" "$st" "$(fmt_dur "$mins")"
+    printf 'TIMELINE\n'
+    local ts xid xp evt note t label extra
+    while IFS=$'\t' read -r ts xid xp evt note; do
+        [[ $xid == "$id" ]] || continue
+        t=${ts:11:5}; extra=""
+        case $evt in
+            start)    label=started;   extra=$note ;;
+            resume)   label=resumed ;;
+            pause)    label=paused;     extra=${note:+— $note} ;;
+            defer)    label=deferred;   extra=${note:+— $note} ;;
+            log)      label=note;       extra=$note ;;
+            amend)    label=renamed;    extra=$note ;;
+            move)     label=moved;      extra="$note -> $xp" ;;
+            cancel)   label=cancelled ;;
+            complete) label=completed ;;
+            commit)   label=commit;     extra=$note ;;
+            *)        continue ;;
+        esac
+        printf '  %s  %-9s  %s\n' "$t" "$label" "$extra"
+    done <"$file"
+    printf '\n'
 }
 
 cmd_status() {
     local d=${ARGS[0]:-${ON:-$TODAY}} file ids id nm
     file=$(day_file "$d")
-    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
     if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$(hm_to_min "$shift_end"); fi
+    (( JSON )) && { json_status "$d" "$file" "$nm"; return; }
+    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
     printf '\nTasks — %s\n\n' "$d"
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ID PROJECT STATUS TIME DESCRIPTION
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ---- ---------------- ------------ ------- -----------
@@ -460,12 +623,13 @@ cmd_status() {
 cmd_grid() {
     local d=${ARGS[0]:-${ON:-$TODAY}} file
     file=$(day_file "$d")
-    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
     local start end slot
     start=$(hm_to_min "$shift_start"); end=$(hm_to_min "$shift_end"); slot=$slot_minutes
     local nm
     if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$end; fi
     (( nm > end )) && nm=$end
+    (( JSON )) && { json_grid "$d" "$file" "$nm"; return; }
+    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
 
     # collect ids (cancelled tasks are voided — omit them)
     local -a ids=()
@@ -559,8 +723,199 @@ cmd_report() {
     printf '\n  %-8s  TOTAL\n\n' "$(fmt_dur "$tot")"
 }
 
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 csv_escape()  { printf '"%s"' "$(printf '%s' "$1" | sed 's/"/""/g')"; }
+
+# quote+escape a string as a JSON value (pure bash, no subshell).
+# C0 control characters are escaped as \uXXXX so the output is always valid
+# JSON even if a description/note ever contains one (e.g. a pasted byte).
+_JSON_CTL=$'\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f'
+json_str() {
+    local s=${1-}
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\t'/\\t}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\n'/\\n}
+    # only walk char-by-char (slow) when a residual control char is present
+    if [[ $s == *[$_JSON_CTL]* ]]; then
+        local out="" i c
+        for (( i=0; i<${#s}; i++ )); do
+            c=${s:i:1}
+            case $c in [$_JSON_CTL]) printf -v c '\\u%04x' "'$c" ;; esac
+            out+=$c
+        done
+        s=$out
+    fi
+    printf '"%s"' "$s"
+}
+
+# ---------------------------------------------------------------------------
+# JSON emitters — the machine-readable read contract consumed by the wj-tui
+# front-end. All derivation (status, minutes, segments, aggregation) is reused
+# from the same replay helpers the text views use, so the two never diverge.
+# ---------------------------------------------------------------------------
+
+# status JSON for a day: per-task totals + day total
+json_status() {
+    local d=$1 file=$2 nm=$3
+    printf '{"date":%s,"now":%s,"tasks":[' "$(json_str "$d")" "$(json_str "$(min_to_hm "$nm")")"
+    local first=1 id p st mins desc tot=0
+    if [[ -f $file ]]; then
+        while read -r id; do
+            [[ -z $id ]] && continue
+            task_cancelled "$file" "$id" && continue
+            p=$(task_project "$file" "$id"); st=$(task_status "$file" "$id")
+            mins=$(task_minutes "$file" "$id" "$nm"); desc=$(task_desc "$file" "$id")
+            tot=$(( tot + mins ))
+            (( first )) && first=0 || printf ','
+            printf '{"id":%s,"project":%s,"status":%s,"minutes":%d,"desc":%s}' \
+                "$(json_str "$id")" "$(json_str "$p")" "$(json_str "$st")" "$mins" "$(json_str "$desc")"
+        done < <(task_ids "$file")
+    fi
+    printf '],"total_minutes":%d}\n' "$tot"
+}
+
+# full event timeline of one task
+json_show() {
+    local d=$1 file=$2 id=$3 nm=$4
+    printf '{"id":%s,"date":%s,"project":%s,"status":%s,"desc":%s,"minutes":%d,"events":[' \
+        "$(json_str "$id")" "$(json_str "$d")" "$(json_str "$(task_project "$file" "$id")")" \
+        "$(json_str "$(task_status "$file" "$id")")" "$(json_str "$(task_desc "$file" "$id")")" \
+        "$(task_minutes "$file" "$id" "$nm")"
+    local first=1 ts xid xp evt note
+    while IFS=$'\t' read -r ts xid xp evt note; do
+        [[ $xid == "$id" ]] || continue
+        (( first )) && first=0 || printf ','
+        printf '{"time":%s,"event":%s,"project":%s,"note":%s}' \
+            "$(json_str "${ts:11:5}")" "$(json_str "$evt")" "$(json_str "$xp")" "$(json_str "$note")"
+    done <"$file"
+    printf ']}\n'
+}
+
+# a task's active intervals as JSON segments. `to` of an ongoing interval is
+# capped at `nm`; `state` records how the interval ended (or "active" if open).
+json_segments() {
+    local file=$1 want=$2 nm=$3
+    local ts id proj evt note m active=0 open=0 first=1
+    printf '['
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ $id == "$want" ]] || continue
+        m=$(hm_to_min "${ts:11:5}")
+        case $evt in
+            start|resume) (( active )) || { active=1; open=$m; } ;;
+            pause|complete|defer)
+                if (( active )); then
+                    (( first )) && first=0 || printf ','
+                    printf '{"from":%s,"to":%s,"state":%s}' \
+                        "$(json_str "$(min_to_hm "$open")")" "$(json_str "$(min_to_hm "$m")")" "$(json_str "$evt")"
+                    active=0
+                fi ;;
+            cancel) active=0 ;;
+        esac
+    done <"$file"
+    # ongoing interval: only emit a positive-duration bar (open may exceed nm
+    # for a task back-dated past the cap, which task_minutes clamps to 0 too)
+    if (( active && open < nm )); then
+        (( first )) && first=0 || printf ','
+        printf '{"from":%s,"to":%s,"state":"active"}' \
+            "$(json_str "$(min_to_hm "$open")")" "$(json_str "$(min_to_hm "$nm")")"
+    fi
+    printf ']'
+}
+
+# intraday grid JSON: per-task segments for the Gantt drill-down view
+json_grid() {
+    local d=$1 file=$2 nm=$3
+    printf '{"date":%s,"shift_start":%s,"shift_end":%s,"slot_minutes":%d,"now":%s,"tasks":[' \
+        "$(json_str "$d")" "$(json_str "$shift_start")" "$(json_str "$shift_end")" \
+        "$slot_minutes" "$(json_str "$(min_to_hm "$nm")")"
+    local first=1 id
+    if [[ -f $file ]]; then
+        while read -r id; do
+            [[ -z $id ]] && continue
+            task_cancelled "$file" "$id" && continue
+            (( first )) && first=0 || printf ','
+            printf '{"id":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"segments":%s}' \
+                "$(json_str "$id")" "$(json_str "$(task_project "$file" "$id")")" \
+                "$(json_str "$(task_desc "$file" "$id")")" "$(json_str "$(task_status "$file" "$id")")" \
+                "$(task_minutes "$file" "$id" "$nm")" "$(json_segments "$file" "$id" "$nm")"
+        done < <(task_ids "$file")
+    fi
+    printf ']}\n'
+}
+
+# ---------------------------------------------------------------------------
+# gantt — multi-day range overview: rows (project|task) x days -> minutes.
+# A 2-D pivot of the report aggregation; the headline view of the wj-tui UI.
+# ---------------------------------------------------------------------------
+cmd_gantt() {
+    local to=${TO:-${ON:-$TODAY}} from=${FROM:-}
+    [[ -n $from ]] || from=$(date -d "$to -6 day" +%Y-%m-%d)   # default: last 7 days
+    case $BY in project|task) ;; *) die "--by must be project|task" ;; esac
+
+    local -a days=(); local d
+    while read -r d; do days+=("$d"); done < <(iter_dates "$from" "$to")
+
+    declare -A AGG=() LABEL=() RTOTAL=() PROJ=()
+    local -a rows=()
+    local file id nm key lbl proj m
+    for d in "${days[@]}"; do
+        file=$(day_file "$d")
+        [[ -f $file ]] || continue
+        nm=$(hm_to_min "$shift_end"); [[ $d == "$TODAY" ]] && nm=$(now_min)
+        while read -r id; do
+            [[ -z $id ]] && continue
+            task_cancelled "$file" "$id" && continue
+            proj=$(task_project "$file" "$id")
+            case $BY in
+                project) key=$proj; lbl=$proj ;;
+                task)    key="$d/$id"; lbl="$id  $(task_desc "$file" "$id")" ;;
+            esac
+            m=$(task_minutes "$file" "$id" "$nm")
+            (( m > 0 )) || continue
+            [[ -n ${LABEL[$key]:-} ]] || { rows+=("$key"); LABEL[$key]=$lbl; PROJ[$key]=$proj; }
+            AGG[$key/$d]=$(( ${AGG[$key/$d]:-0} + m ))
+            RTOTAL[$key]=$(( ${RTOTAL[$key]:-0} + m ))
+        done < <(task_ids "$file")
+    done
+
+    if (( JSON )); then
+        printf '{"from":%s,"to":%s,"by":%s,"days":[' "$(json_str "$from")" "$(json_str "$to")" "$(json_str "$BY")"
+        local first=1
+        for d in "${days[@]}"; do (( first )) && first=0 || printf ','; printf '%s' "$(json_str "$d")"; done
+        printf '],"rows":['
+        first=1
+        for key in "${rows[@]}"; do
+            (( first )) && first=0 || printf ','
+            printf '{"key":%s,"label":%s,"project":%s,"total_minutes":%d,"perDay":{' \
+                "$(json_str "$key")" "$(json_str "${LABEL[$key]}")" \
+                "$(json_str "${PROJ[$key]}")" "${RTOTAL[$key]}"
+            local pfirst=1
+            for d in "${days[@]}"; do
+                [[ -n ${AGG[$key/$d]:-} ]] || continue
+                (( pfirst )) && pfirst=0 || printf ','
+                printf '%s:%d' "$(json_str "$d")" "${AGG[$key/$d]}"
+            done
+            printf '}}'
+        done
+        printf ']}\n'
+        return
+    fi
+
+    # text rendering: rows x days matrix of durations
+    printf '\nGantt %s..%s  by %s\n\n' "$from" "$to" "$BY"
+    printf '%-20s' ''
+    for d in "${days[@]}"; do printf ' %7s' "${d:5}"; done
+    printf ' %8s\n' TOTAL
+    for key in "${rows[@]}"; do
+        printf '%-20.20s' "${LABEL[$key]}"
+        for d in "${days[@]}"; do
+            if [[ -n ${AGG[$key/$d]:-} ]]; then printf ' %7s' "$(fmt_dur "${AGG[$key/$d]}")"; else printf ' %7s' '·'; fi
+        done
+        printf ' %8s\n' "$(fmt_dur "${RTOTAL[$key]}")"
+    done
+    printf '\n'
+}
 
 cmd_export() {
     local from=${FROM:-$TODAY} to=${TO:-$TODAY} d file
@@ -582,13 +937,15 @@ cmd_export() {
                         "$(csv_escape "$evt")" "$(csv_escape "$note")" ;;
                 json)
                     (( first )) && printf '\n' || printf ',\n'; first=0
-                    printf '  {"timestamp":"%s","task_id":"%s","project":"%s","event":"%s","note":"%s"}' \
-                        "$(json_escape "$ts")" "$(json_escape "$id")" "$(json_escape "$proj")" \
-                        "$(json_escape "$evt")" "$(json_escape "$note")" ;;
+                    printf '  {"timestamp":%s,"task_id":%s,"project":%s,"event":%s,"note":%s}' \
+                        "$(json_str "$ts")" "$(json_str "$id")" "$(json_str "$proj")" \
+                        "$(json_str "$evt")" "$(json_str "$note")" ;;
             esac
         done <"$file"
     done < <(iter_dates "$from" "$to")
-    [[ $FORMAT == json ]] && { (( first )) && printf ']\n' || printf '\n]\n'; }
+    # `if`, not `&&`: as the last statement, `[[..]] && {..}` would return 1
+    # for csv/tsv (non-json), making a successful export exit non-zero.
+    if [[ $FORMAT == json ]]; then (( first )) && printf ']\n' || printf '\n]\n'; fi
 }
 
 # internal: today's task ids (for shell completion)
@@ -609,8 +966,8 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start pause resume complete defer log amend move cancel status grid report export config completion help"
-    flags="--at --date --project --from --to --format --by"
+    cmds="start pause resume complete defer log amend move cancel ls show status grid gantt report export ui config completion version help"
+    flags="--at --date --project --from --to --format --by --days --json"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
     fi
@@ -623,7 +980,7 @@ _wj() {
     if [[ $cur == -* ]]; then COMPREPLY=( $(compgen -W "$flags" -- "$cur") ); return; fi
     cmd=${COMP_WORDS[1]}
     case $cmd in
-        pause|resume|complete|defer|amend|move|cancel)
+        pause|resume|complete|defer|amend|move|cancel|show)
             COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") ) ;;
     esac
 }
@@ -661,21 +1018,40 @@ TASK COMMANDS
                       (kept in the raw log / export for audit).
 
 VIEW & ANALYSIS
+  ls                  List currently-open tasks (in-progress / paused / deferred).
+                      Today by default; --days N scans the last N days (adds a DATE
+                      column) to catch timers you left running on an earlier day.
+  show <id>           Full timeline of one task: start, notes, pauses/resumes,
+                      renames, moves, recorded commits, total time and status.
+                      Today by default; --date YYYY-MM-DD for a past day.
   status [date]       Per-task totals table for a day (default: today). Default cmd.
   grid   [date]       Slot-by-slot schedule for a day (see SYMBOLS below).
+  gantt  [flags]      Multi-day overview: rows (--by project|task) x days of time.
+                      Default range: last 7 days through --to. The headline UI view.
+                      --by task lists each day's tasks separately (ids are per-day).
   report [flags]      Aggregate time across a date range, grouped by --by.
   export [flags]      Dump raw events as csv / json / tsv over a date range.
 
+  Most read views (status, ls, show, grid, gantt) also accept --json for a stable
+  machine-readable contract — this is what the `ui` front-end consumes.
+
 OTHER
+  ui                  Launch the wj-tui front-end (requires the wj-tui binary).
+                      Bare `wj` launches it too when interface=ui in the config.
   config              Print the path to the active config file.
   completion SHELL    Print a completion script: completion bash | completion zsh.
+  version             Print the wj version (also: --version, -V).
   help                Show this help.
 
 FLAGS
-  --at HH:MM          Act at a past time instead of now (24h). Backfills the grid.
-                      Chain across commands to reconstruct a whole day after the fact.
+  --at TIME           Act at a past time instead of now. Flexible format: 9, 930,
+                      0930, 9:30, 9.30, 9am, 9pm, 9:30pm all normalise to HH:MM.
+                      Backfills the grid; chain across commands to rebuild a day.
   --date YYYY-MM-DD   Act on another day, not today (alias: --on). Combine with --at
                       to reconstruct any past day; defaults the day for status/grid.
+                      On a past day WITHOUT --at, the time is inferred from that day's
+                      last event (or shift_start), and the inference is printed.
+  --days N            ls: how many days back to scan for open tasks. Default: 1 (today).
   --project NAME      Override project detection. Use for non-git work, e.g.
                       --project meetings / --project "maroc ventes" / --project admin.
                       On start: where the task lives. On pause/complete/etc: scope.
@@ -698,6 +1074,7 @@ CONFIG  (~/.config/wj/config — created on first run)
   totals                    time summing: exact | slot               (exact)
   default_project           project used outside a git repo          (admin)
   git_tag                   record commits on complete: on | off     (on)
+  interface                 bare-wj front-end: minimal | ui          (minimal)
 
 EXAMPLES
   wj start "Refactor auth" --project backend   # start tracking
@@ -711,6 +1088,9 @@ EXAMPLES
   wj complete --project meetings                # finish standup
   wj resume                                     # back to the refactor (most-recent paused)
   wj complete                                   # finish it; commits recorded
+  wj ls                                         # what's open right now
+  wj ls --days 7                                # anything left open this past week
+  wj show T1                                     # full timeline of one task
   wj status                                     # today's totals
   wj grid                                       # today's schedule
   wj report --from 2026-06-01 --to 2026-06-30 --by project
@@ -736,10 +1116,33 @@ EOF
 # ---------------------------------------------------------------------------
 main() {
     load_config
-    local cmd=${1:-status}
-    [[ $# -gt 0 ]] && shift || true
+    # version is checked before the default-view logic so `wj --version` works
+    if [[ ${1:-} == version || ${1:-} == --version || ${1:-} == -V ]]; then
+        printf 'wj %s\n' "$WJ_VERSION"; return 0
+    fi
+    local cmd
+    # no command, or a leading flag (e.g. `wj --json`), means "default view"
+    if [[ $# -eq 0 || $1 == -* ]]; then cmd=__default; else cmd=$1; shift; fi
     parse_args "$@"
     case $cmd in
+        __default)
+            # bare `wj`: launch the UI front-end when configured & available,
+            # otherwise fall back to today's status (the classic default).
+            if [[ $interface == ui ]] && command -v wj-tui >/dev/null 2>&1; then
+                exec wj-tui -wj "$(self_path)"
+            fi
+            cmd_status ;;
+        ui)
+            command -v wj-tui >/dev/null 2>&1 \
+                || die "ui mode needs the 'wj-tui' binary (not installed) — see README"
+            # tell wj-tui to call *this* wj (not whatever is first on PATH), and
+            # translate the parsed range/grouping globals into its flags
+            local -a uiargs=(-wj "$(self_path)")
+            [[ -n $FROM ]] && uiargs+=(-from "$FROM")
+            [[ -n $TO ]]   && uiargs+=(-to "$TO")
+            [[ -n $BY ]]   && uiargs+=(-by "$BY")
+            exec wj-tui "${uiargs[@]}" ;;
+        gantt)    cmd_gantt ;;
         start)    cmd_start ;;
         pause)    cmd_pause ;;
         resume)   cmd_resume ;;
@@ -749,6 +1152,8 @@ main() {
         amend)    cmd_amend ;;
         move)     cmd_move ;;
         cancel)   cmd_cancel ;;
+        ls)       cmd_ls ;;
+        show)     cmd_show ;;
         status)   cmd_status ;;
         grid)     cmd_grid ;;
         report)   cmd_report ;;

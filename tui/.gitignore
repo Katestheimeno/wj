@@ -1,0 +1,7 @@
+# compiled wj-tui binary (built via `go build` / packaging)
+/wj-tui
+/bin/
+
+# test/coverage output
+*.out
+*.test
