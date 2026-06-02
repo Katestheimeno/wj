@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -100,13 +101,13 @@ func TestClientMutate(t *testing.T) {
 	cli := Client{Bin: wjBin}
 
 	day := "2026-05-30"
-	if err := cli.Mutate("start", "Write docs", "--project", "backend", "--date", day, "--at", "09:00"); err != nil {
+	if _, err := cli.Mutate("start", "Write docs", "--project", "backend", "--date", day, "--at", "09:00"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if err := cli.Mutate("pause", "T1", "--date", day, "--at", "09:30"); err != nil {
+	if _, err := cli.Mutate("pause", "T1", "--date", day, "--at", "09:30"); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	if err := cli.Mutate("amend", "T1", "Write the docs", "--date", day, "--at", "09:31"); err != nil {
+	if _, err := cli.Mutate("amend", "T1", "Write the docs", "--date", day, "--at", "09:31"); err != nil {
 		t.Fatalf("amend: %v", err)
 	}
 
@@ -121,8 +122,18 @@ func TestClientMutate(t *testing.T) {
 		t.Fatalf("mutated task mismatch: %+v", got)
 	}
 
+	// re-pausing an already-paused task is an idempotent no-op: no error, and
+	// the CLI echoes an "already paused" line so the UI can surface feedback.
+	note, err := cli.Mutate("pause", "T1", "--date", day, "--at", "09:45")
+	if err != nil {
+		t.Fatalf("re-pause should not error: %v", err)
+	}
+	if !strings.Contains(note, "already paused") {
+		t.Fatalf("re-pause note = %q, want it to contain %q", note, "already paused")
+	}
+
 	// a bad mutation surfaces an error (no such task)
-	if err := cli.Mutate("complete", "T9", "--date", day); err == nil {
+	if _, err := cli.Mutate("complete", "T9", "--date", day); err == nil {
 		t.Error("completing a nonexistent task should error")
 	}
 }

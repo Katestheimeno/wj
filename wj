@@ -259,6 +259,12 @@ task_status() {
     printf '%s' "$st"
 }
 
+# true if task $2 in file $1 is already in status $3. Used to keep the
+# state-changing actions idempotent: repeating an action whose target state
+# the task already holds (pause a paused task, resume a running one, …)
+# appends nothing and is a no-op.
+in_status() { [[ "$(task_status "$1" "$2")" == "$3" ]]; }
+
 # distinct task ids in a day file, in first-seen (numeric) order
 task_ids() {
     local file=$1 ts id rest
@@ -439,6 +445,7 @@ cmd_pause() {
         task_exists "$file" "$id" || die "no such task today: $id"
     else id=$(find_task "$file" active "$proj"); reason=${ARGS[*]:-}; fi
     [[ -n $id ]] || die "no in-progress task${PROJECT_OVERRIDE:+ in $proj} to pause"
+    in_status "$file" "$id" paused && { printf '%s  already paused\n' "$id"; return 0; }
     append_event "$ts" "$id" "$(task_project "$file" "$id")" pause "$reason"
     printf '%s  %s  paused%s\n' "$id" "${ts:11:5}" "${reason:+ — $reason}"
 }
@@ -450,6 +457,7 @@ cmd_resume() {
         task_exists "$file" "$id" || die "no such task today: $id"
     else id=$(find_task "$file" resumable "$proj"); fi
     [[ -n $id ]] || die "no paused/deferred task to resume"
+    in_status "$file" "$id" in-progress && { printf '%s  already in-progress\n' "$id"; return 0; }
     local tproj; tproj=$(task_project "$file" "$id")
     # auto-pause an in-progress task in that project first
     local active; active=$(find_task "$file" active "$tproj")
@@ -465,6 +473,7 @@ cmd_defer() {
         task_exists "$file" "$id" || die "no such task today: $id"
     else id=$(find_task "$file" active "$proj"); reason=${ARGS[*]:-}; fi
     [[ -n $id ]] || die "no task to defer (give a task id)"
+    in_status "$file" "$id" deferred && { printf '%s  already deferred\n' "$id"; return 0; }
     append_event "$ts" "$id" "$(task_project "$file" "$id")" defer "$reason"
     printf '%s  %s  deferred%s\n' "$id" "${ts:11:5}" "${reason:+ — $reason}"
 }
@@ -514,6 +523,7 @@ cmd_cancel() {
         task_exists "$file" "$id" || die "no such task today: $id"
     else id=$(find_task "$file" active "$proj"); fi
     [[ -n $id ]] || die "no task to cancel (give a task id)"
+    in_status "$file" "$id" cancelled && { printf '%s  already cancelled\n' "$id"; return 0; }
     append_event "$ts" "$id" "$(task_project "$file" "$id")" cancel ""
     printf '%s  %s  cancelled (voided — hidden from status/grid/report)\n' "$id" "${ts:11:5}"
 }
@@ -525,6 +535,7 @@ cmd_complete() {
         task_exists "$file" "$id" || die "no such task today: $id"
     else id=$(find_task "$file" active "$proj"); fi
     [[ -n $id ]] || die "no in-progress task${PROJECT_OVERRIDE:+ in $proj} to complete"
+    in_status "$file" "$id" completed && { printf '%s  already completed\n' "$id"; return 0; }
     local tproj; tproj=$(task_project "$file" "$id")
     append_event "$ts" "$id" "$tproj" complete ""
     local mins; mins=$(task_minutes "$file" "$id" "$(now_min)")

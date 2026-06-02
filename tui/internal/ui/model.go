@@ -79,8 +79,13 @@ type pendingMsg struct {
 	err   error
 }
 
-// mutationMsg is the result of a state-changing `wj` invocation.
-type mutationMsg struct{ err error }
+// mutationMsg is the result of a state-changing `wj` invocation. note carries
+// the CLI's confirmation line (e.g. "T1  already completed") so the UI can
+// echo it back as feedback.
+type mutationMsg struct {
+	note string
+	err  error
+}
 
 // inputMode is an inline text prompt. Two flavors:
 //   - value entry for start/amend/move (action = the verb), then issued via
@@ -140,6 +145,7 @@ type Model struct {
 	jumpTaskID    string // a search result to select once its day's grid loads
 	showHelp      bool
 	err           string
+	notice        string // transient confirmation/no-op feedback from a mutation
 	width, height int
 	ready         bool
 	focusInit     bool // whether focusedDay has been defaulted yet
@@ -289,7 +295,8 @@ func tickCmd() tea.Cmd {
 func (m Model) mutate(args ...string) tea.Cmd {
 	cli := m.cli
 	return func() tea.Msg {
-		return mutationMsg{err: cli.Mutate(args...)}
+		note, err := cli.Mutate(args...)
+		return mutationMsg{note: note, err: err}
 	}
 }
 
@@ -422,8 +429,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mutationMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
+			m.notice = ""
 		} else {
 			m.err = ""
+			// echo the CLI's confirmation line (incl. idempotent no-ops like
+			// "T1  already completed") so a re-click still gives feedback
+			m.notice = msg.note
 		}
 		// reload regardless: even on a CLI error the log may have changed
 		return m, m.reloadAll()
@@ -453,7 +464,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.err = "" // any keypress dismisses a stale error/notice
+	m.err = ""    // any keypress dismisses a stale error/notice
+	m.notice = "" // ...and a stale mutation confirmation
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -1174,6 +1186,8 @@ func (m Model) renderFooter(w int) string {
 	var b strings.Builder
 	if m.err != "" {
 		b.WriteString(errStyle.Render(truncate("⚠ "+m.err, w)) + "\n")
+	} else if m.notice != "" {
+		b.WriteString(noticeStyle.Render(truncate("✓ "+m.notice, w)) + "\n")
 	}
 	switch {
 	case m.input.active:
@@ -1937,6 +1951,7 @@ var (
 	todayStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("84")) // green = today
 	selStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("238"))
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	noticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45")) // cyan: neutral feedback
 	inputStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
 )
 

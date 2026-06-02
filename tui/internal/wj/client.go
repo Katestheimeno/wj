@@ -67,11 +67,13 @@ func (c Client) Projects() ([]string, error) {
 }
 
 // Mutate runs a state-changing subcommand (start, pause, complete, …) and
-// discards its stdout. The bash CLI owns all the mutation logic; this just
-// invokes it as a user would.
-func (c Client) Mutate(args ...string) error {
-	_, err := c.run(args...)
-	return err
+// returns the CLI's confirmation line (trimmed stdout), e.g.
+// "T1  10:30  completed — 1h30m" or the idempotent "T1  already completed".
+// The bash CLI owns all the mutation logic; this just invokes it as a user
+// would and hands its feedback back to the UI.
+func (c Client) Mutate(args ...string) (string, error) {
+	out, err := c.run(args...)
+	return strings.TrimSpace(string(out)), err
 }
 
 // Gantt fetches the multi-day range overview. Empty from/to let the CLI apply
