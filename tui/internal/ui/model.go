@@ -34,6 +34,7 @@ const (
 	paneRange    pane = iota // sidebar: Projects list (navigate project rows)
 	paneDay                  // sidebar: the focused day's Tasks list
 	paneTimeline             // the selected task's event timeline
+	panePending              // sidebar: the not-yet-started backlog
 	paneCount
 )
 
@@ -64,6 +65,20 @@ type liveMsg struct {
 // projectsMsg carries the list of known projects (for move autocomplete).
 type projectsMsg struct{ names []string }
 
+// searchMsg carries the results of a global task search. The query is echoed
+// back so a result for a query the user has since edited can be discarded.
+type searchMsg struct {
+	query   string
+	results []wj.Found
+	err     error
+}
+
+// pendingMsg carries the current backlog of not-yet-started tasks.
+type pendingMsg struct {
+	items []wj.Pending
+	err   error
+}
+
 // mutationMsg is the result of a state-changing `wj` invocation.
 type mutationMsg struct{ err error }
 
@@ -82,12 +97,23 @@ type inputMode struct {
 	acPrefix string   // move autocomplete: the prefix Tab cycles matches for
 }
 
-// confirmMode is a y/n guard for destructive mutations (cancel).
+// searchMode is the global task-search overlay (opened with /). The query is
+// re-run against the CLI on every edit; results carry the day + id needed to
+// jump straight to a task.
+type searchMode struct {
+	active  bool
+	query   string
+	results []wj.Found
+	sel     int
+}
+
+// confirmMode is a y/n guard for destructive mutations (cancel, drop).
 type confirmMode struct {
 	active    bool
 	prompt    string
 	verb      string   // wj verb to run on confirmation
 	valueArgs []string // args between the verb and --date (e.g. the task id)
+	raw       bool     // run as a plain mutate (no --date), e.g. for backlog drop
 }
 
 // Model is the root Bubble Tea model.
@@ -110,11 +136,16 @@ type Model struct {
 	pane          pane
 	input         inputMode
 	confirm       confirmMode
+	search        searchMode
+	jumpTaskID    string // a search result to select once its day's grid loads
 	showHelp      bool
 	err           string
 	width, height int
 	ready         bool
 	focusInit     bool // whether focusedDay has been defaulted yet
+
+	pending []wj.Pending // the not-yet-started backlog (its own panel)
+	selPend int          // index into pending
 
 	live     *wj.Status // today's status, for the running-task header clock
 	liveAt   time.Time  // wall-clock time m.live was fetched
@@ -133,7 +164,7 @@ func New(cli wj.Client, from, to, by string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadGantt(), m.loadLive(), m.loadProjects(), tickCmd())
+	return tea.Batch(m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadPending(), tickCmd())
 }
 
 // currentDay is the YYYY-MM-DD of the focused day column ("" if none).
@@ -234,6 +265,22 @@ func (m Model) loadProjects() tea.Cmd {
 	}
 }
 
+func (m Model) loadPending() tea.Cmd {
+	cli := m.cli
+	return func() tea.Msg {
+		items, err := cli.Pending()
+		return pendingMsg{items: items, err: err}
+	}
+}
+
+func (m Model) runSearch(query string) tea.Cmd {
+	cli := m.cli
+	return func() tea.Msg {
+		res, err := cli.Search(query)
+		return searchMsg{query: query, results: res, err: err}
+	}
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Every(refresh, func(time.Time) tea.Msg { return tickMsg{} })
 }
@@ -248,8 +295,12 @@ func (m Model) mutate(args ...string) tea.Cmd {
 
 // reloadAll refreshes every panel from the CLI (used after a mutation).
 func (m Model) reloadAll() tea.Cmd {
-	return tea.Batch(m.loadGantt(), m.loadGrid(m.currentDay()),
-		m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive())
+	cmds := []tea.Cmd{m.loadGantt(), m.loadGrid(m.currentDay()),
+		m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive(), m.loadPending()}
+	if m.search.active { // keep an open search overlay in sync with mutations
+		cmds = append(cmds, m.runSearch(m.search.query))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update ----------------------------------------------------------------------
@@ -268,7 +319,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{tickCmd()}
 		if m.tickN%dataEveryTicks == 0 {
 			cmds = append(cmds, m.loadGantt(), m.loadGrid(m.currentDay()),
-				m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive())
+				m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive(), m.loadPending())
+			if m.search.active {
+				cmds = append(cmds, m.runSearch(m.search.query))
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -283,6 +337,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projects = msg.names
 		return m, nil
 
+	case pendingMsg:
+		if msg.err == nil {
+			m.pending = msg.items
+			m.selPend = clamp(m.selPend, 0, len(m.pending)-1)
+		}
+		return m, nil
+
+	case searchMsg:
+		if !m.search.active || msg.query != m.search.query {
+			return m, nil // stale (overlay closed or query moved on)
+		}
+		if msg.err == nil {
+			m.search.results = msg.results
+			m.search.sel = clamp(m.search.sel, 0, len(msg.results)-1)
+		}
+		return m, nil
+
 	case ganttMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
@@ -290,6 +361,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// NB: do not clear m.err here — a background reload must not erase a
 		// mutation/load error before the user has seen it (cleared on keypress).
+		prevProj := m.projectFilter() // remember the selected project (old rows)
 		m.g = msg.g
 		m.from, m.to = msg.g.From, msg.g.To
 		if !m.focusInit && len(m.g.Days) > 0 {
@@ -297,6 +369,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focusInit = true
 		}
 		m.focusedDay = clamp(m.focusedDay, 0, len(m.g.Days)-1)
+		// follow the selection by project identity, not raw index, since the row
+		// set can be reordered/re-keyed across a reload (or a by project↔task flip).
+		if prevProj != "" {
+			for i, r := range m.g.Rows {
+				if rowProject(r) == prevProj {
+					m.focusedRow = i + 1
+					break
+				}
+			}
+		}
 		m.focusedRow = clamp(m.focusedRow, 0, len(m.g.Rows)) // 0 = All, len = last row
 		return m, m.loadGrid(m.currentDay())                 // refresh the drill-down too
 
@@ -306,9 +388,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.err = msg.err.Error()
+			m.jumpTaskID = "" // abandon any pending search-jump rather than strand it
 			return m, nil
 		}
 		m.grid = msg.g
+		if m.jumpTaskID != "" { // a search jump is landing on this day
+			for i, t := range m.grid.Tasks {
+				if t.ID == m.jumpTaskID {
+					m.selTask = i
+					break
+				}
+			}
+			m.jumpTaskID = ""
+		}
 		m.selTask = clamp(m.selTask, 0, len(m.filteredTasks())-1)
 		if m.selectedTaskID() == "" {
 			m.show = nil // day has no (matching) tasks — drop any stale timeline
@@ -344,6 +436,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// active overlays capture all input
+	if m.search.active {
+		return m.handleSearch(msg)
+	}
 	if m.input.active {
 		return m.handleInput(msg)
 	}
@@ -368,6 +463,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.showHelp = true
 		return m, nil
+	case "/":
+		m.search = searchMode{active: true}
+		return m, m.runSearch("") // prime with everything (most recent first)
 	case "ctrl+r":
 		return m, m.reloadAll()
 	case "left":
@@ -405,9 +503,75 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyDay(msg)
 	case paneTimeline:
 		return m.keyTimeline(msg)
+	case panePending:
+		return m.keyPending(msg)
 	default:
 		return m, nil
 	}
+}
+
+// selectedPendID is the id of the highlighted pending task ("" if none).
+func (m Model) selectedPendID() string {
+	if m.selPend < 0 || m.selPend >= len(m.pending) {
+		return ""
+	}
+	return m.pending[m.selPend].ID
+}
+
+// keyPending drives the backlog panel: navigate, promote (start), add, set due,
+// reorder, and drop. Add/due open the inline prompt; drop asks to confirm.
+func (m Model) keyPending(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.pending)
+	switch msg.String() {
+	case "up", "k":
+		if m.selPend > 0 {
+			m.selPend--
+		}
+	case "down", "j":
+		if m.selPend < n-1 {
+			m.selPend++
+		}
+	case "g":
+		m.selPend = 0
+	case "G":
+		if n > 0 {
+			m.selPend = n - 1
+		}
+	case "h":
+		m.pane = paneRange
+	case "enter": // promote the selected backlog item into a tracked task
+		if id := m.selectedPendID(); id != "" {
+			return m, m.mutate("start", id)
+		}
+	case "a": // add a new pending task (inline @project / !due optional)
+		m.input = inputMode{active: true, action: "add",
+			prompt: "add pending: desc  (optional @project  !YYYY-MM-DD)"}
+	case "d": // set / clear its deadline
+		if id := m.selectedPendID(); id != "" {
+			m.input = inputMode{active: true, action: "pdue", taskID: id,
+				prompt: "due " + id + " (YYYY-MM-DD; empty clears)"}
+		}
+	case "x": // drop without starting (guarded)
+		if id := m.selectedPendID(); id != "" {
+			m.confirm = confirmMode{active: true, prompt: "drop pending " + id + "?",
+				verb: "drop", valueArgs: []string{id}, raw: true}
+		}
+	case "[": // raise one step (and follow it)
+		if id := m.selectedPendID(); id != "" {
+			if m.selPend > 0 {
+				m.selPend--
+			}
+			return m, m.mutate("raise", id)
+		}
+	case "]": // lower one step (and follow it)
+		if id := m.selectedPendID(); id != "" {
+			if m.selPend < n-1 {
+				m.selPend++
+			}
+			return m, m.mutate("lower", id)
+		}
+	}
+	return m, nil
 }
 
 // stepDay moves the focused day by dir (clamped), reloading the drill-down.
@@ -554,6 +718,25 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.issueMutation("log", []string{val})
+		case "add": // new pending backlog task (not a dated mutation)
+			desc, proj, due := parsePendingInput(val)
+			if desc == "" {
+				return m, nil
+			}
+			args := []string{"add", desc}
+			if proj != "" {
+				args = append(args, "--project", proj)
+			}
+			if due != "" {
+				args = append(args, "--due", due)
+			}
+			return m, m.mutate(args...)
+		case "pdue": // set or clear a pending task's deadline
+			d := val
+			if d == "" {
+				d = "-"
+			}
+			return m, m.mutate("due", in.taskID, d)
 		}
 		return m, nil
 	case tea.KeyTab:
@@ -609,6 +792,72 @@ func (m Model) cycleProject(prefix, cur string) string {
 	return matches[0]
 }
 
+// handleSearch drives the global search overlay: runes edit the query (which
+// re-runs the search), ↑/↓ (or Ctrl+p/Ctrl+n) move the selection, Enter jumps
+// to the highlighted task, Esc closes.
+func (m Model) handleSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		return m.jumpToResult()
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.search = searchMode{}
+		return m, nil
+	case tea.KeyUp:
+		if m.search.sel > 0 {
+			m.search.sel--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.search.sel < len(m.search.results)-1 {
+			m.search.sel++
+		}
+		return m, nil
+	case tea.KeyBackspace, tea.KeyDelete:
+		if r := []rune(m.search.query); len(r) > 0 {
+			m.search.query = string(r[:len(r)-1])
+			m.search.sel = 0
+			return m, m.runSearch(m.search.query)
+		}
+		return m, nil
+	case tea.KeyRunes, tea.KeySpace:
+		m.search.query += string(msg.Runes)
+		m.search.sel = 0
+		return m, m.runSearch(m.search.query)
+	}
+	switch msg.String() {
+	case "ctrl+n":
+		if m.search.sel < len(m.search.results)-1 {
+			m.search.sel++
+		}
+	case "ctrl+p":
+		if m.search.sel > 0 {
+			m.search.sel--
+		}
+	}
+	return m, nil
+}
+
+// jumpToResult closes the overlay and navigates to the selected hit: it windows
+// the range so the task's day is focused, clears the project filter, and marks
+// the task to be selected once that day's grid loads.
+func (m Model) jumpToResult() (tea.Model, tea.Cmd) {
+	if m.search.sel < 0 || m.search.sel >= len(m.search.results) {
+		m.search = searchMode{}
+		return m, nil
+	}
+	r := m.search.results[m.search.sel]
+	m.search = searchMode{}
+	if t, err := time.Parse(dateLayout, r.Date); err == nil {
+		m.from = t.AddDate(0, 0, -6).Format(dateLayout) // a 7-day window ending on the hit
+		m.to = r.Date
+	}
+	m.focusInit = false // re-default focus to the last day (the hit's day)
+	m.focusedRow = 0    // clear any project filter so the task is visible
+	m.jumpTaskID = r.ID
+	m.pane = paneTimeline
+	return m, m.loadGantt()
+}
+
 // handleConfirm resolves a y/n destructive-action prompt.
 func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -616,6 +865,9 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		c := m.confirm
 		m.confirm = confirmMode{}
 		m.err = ""
+		if c.raw { // backlog ops aren't dated task mutations — run them plainly
+			return m, m.mutate(append([]string{c.verb}, c.valueArgs...)...)
+		}
 		return m.issueMutation(c.verb, c.valueArgs)
 	case "n", "N", "esc", "q":
 		m.confirm = confirmMode{}
@@ -797,6 +1049,12 @@ func (m Model) View() string {
 			footerStyle.Render("press ? or esc to close")
 	}
 
+	if m.search.active {
+		return header + "\n" +
+			panel("Search", m.searchOverlay(w), true, w, 0) + "\n" +
+			footerStyle.Render("type to filter · ↑↓ move · enter jump · esc cancel")
+	}
+
 	foot := m.renderFooter(w)
 	legend := m.bottomLegend(w)
 	legendLines := 0
@@ -833,7 +1091,11 @@ func (m Model) View() string {
 		parts = append(parts, legend)
 	}
 	parts = append(parts, foot)
-	return strings.Join(parts, "\n")
+	out := strings.Join(parts, "\n")
+	if fill { // hard guard: never render more lines than the terminal is tall
+		out = clipLines(out, m.height)
+	}
+	return out
 }
 
 // bottomLegend is a single full-width key of every project in the current
@@ -859,17 +1121,24 @@ func (m Model) bottomLegend(w int) string {
 	}
 	line := dimStyle.Render("legend: ")
 	used := lipgloss.Width(line)
+	add := func(seg string) bool {
+		if used+lipgloss.Width(seg) > w {
+			return false
+		}
+		line += seg
+		used += lipgloss.Width(seg)
+		return true
+	}
 	for i, part := range parts {
 		seg := part
 		if i > 0 {
 			seg = "  " + part
 		}
-		if used+lipgloss.Width(seg) > w {
-			break
+		if !add(seg) {
+			return line // project swatches alone already fill the width
 		}
-		line += seg
-		used += lipgloss.Width(seg)
 	}
+	add(statusKey()) // best-effort: append the status glyph key if it fits
 	return line
 }
 
@@ -877,8 +1146,18 @@ func (m Model) bottomLegend(w int) string {
 // the live running-task clock right-aligned (so the line spans the width).
 func (m Model) renderHeader(w int) string {
 	left := fmt.Sprintf("wj · %s .. %s · by %s", m.from, m.to, m.by)
-	run := m.runningHeader()
-	rw := lipgloss.Width(run)
+	// right side: today's status rollup, then the running-task clock.
+	right := m.todayRollup()
+	if run := m.runningHeader(); run != "" {
+		if right != "" {
+			right += "   "
+		}
+		right += run
+	}
+	rw := lipgloss.Width(right)
+	if rw+1 > w { // right side alone won't fit — drop it rather than overflow
+		right, rw = "", 0
+	}
 	if lipgloss.Width(left)+rw+2 > w {
 		left = truncate(left, max2(1, w-rw-2))
 	}
@@ -886,7 +1165,7 @@ func (m Model) renderHeader(w int) string {
 	if gap < 1 {
 		gap = 1
 	}
-	return titleStyle.Render(left) + strings.Repeat(" ", gap) + run
+	return titleStyle.Render(left) + strings.Repeat(" ", gap) + right
 }
 
 // renderFooter builds the (possibly multi-line) bottom area: an error line, an
@@ -931,15 +1210,113 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	if d := m.currentDay(); d != "" {
 		taskTitle = "Tasks · " + shortDate(d)
 	}
-	if !fill {
-		proj := panel("Projects", m.renderProjects(cw, 1<<30), m.pane == paneRange, w, 0)
-		tasks := panel(taskTitle, m.renderTasks(cw, 1<<30), m.pane != paneRange, w, 0)
-		return lipgloss.JoinVertical(lipgloss.Left, proj, tasks)
+	pendTitle := "Pending"
+	if n := len(m.pending); n > 0 {
+		pendTitle = fmt.Sprintf("Pending (%d)", n)
 	}
-	projH, taskH := split2(h, m.pane == paneRange)
-	proj := panel("Projects", m.renderProjects(cw, projH-3), m.pane == paneRange, w, projH)
-	tasks := panel(taskTitle, m.renderTasks(cw, taskH-3), m.pane != paneRange, w, taskH)
-	return lipgloss.JoinVertical(lipgloss.Left, proj, tasks)
+	if !fill {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			panel("Projects", m.renderProjects(cw, 1<<30), m.pane == paneRange, w, 0),
+			panel(taskTitle, m.renderTasks(cw, 1<<30), m.pane == paneDay, w, 0),
+			panel(pendTitle, m.renderPending(cw, 1<<30), m.pane == panePending, w, 0),
+		)
+	}
+	// focused sidebar panel gets the most room (−1 = none focused → equal thirds)
+	fi := -1
+	switch m.pane {
+	case paneRange:
+		fi = 0
+	case paneDay:
+		fi = 1
+	case panePending:
+		fi = 2
+	}
+	hs := sidebarSplit(h, fi)
+	return lipgloss.JoinVertical(lipgloss.Left,
+		panel("Projects", m.renderProjects(cw, hs[0]-3), m.pane == paneRange, w, hs[0]),
+		panel(taskTitle, m.renderTasks(cw, hs[1]-3), m.pane == paneDay, w, hs[1]),
+		panel(pendTitle, m.renderPending(cw, hs[2]-3), m.pane == panePending, w, hs[2]),
+	)
+}
+
+// sidebarSplit divides the sidebar height among Projects/Tasks/Pending. The
+// focused panel (0/1/2) gets the most; focused == -1 splits into equal thirds.
+func sidebarSplit(h, focused int) [3]int {
+	if focused < 0 || h < 12 {
+		a := h / 3
+		return [3]int{a, a, h - 2*a}
+	}
+	return split3(h, focused)
+}
+
+// renderPending lists the backlog: a deadline-urgency glyph + the description
+// (project-colored when set), with the due date right-aligned.
+func (m Model) renderPending(cw, maxRows int) string {
+	if len(m.pending) == 0 {
+		return dimStyle.Render("(empty — press a to add)")
+	}
+	items := make([]string, len(m.pending))
+	for i, p := range m.pending {
+		glyph, gc, due := m.dueBadge(p.Due)
+		left := p.Desc
+		if left == "" {
+			left = p.ID
+		}
+		lc := lipgloss.Color("250")
+		if p.Project != "" {
+			lc = ProjectColor(p.Project)
+		}
+		items[i] = listLine(glyph, gc, lc, left, due, i == m.selPend, cw)
+	}
+	items = windowRows(items, m.selPend, maxRows)
+	return strings.Join(items, "\n")
+}
+
+// parsePendingInput splits the add-prompt text into a description plus optional
+// inline tokens: "@project" sets the project, "!YYYY-MM-DD" the deadline.
+// e.g. "Fix invoice @acme !2026-06-10" → ("Fix invoice", "acme", "2026-06-10").
+func parsePendingInput(s string) (desc, project, due string) {
+	var words []string
+	for _, f := range strings.Fields(s) {
+		switch {
+		case len(f) > 1 && f[0] == '@':
+			project = f[1:]
+		case len(f) > 1 && f[0] == '!':
+			due = f[1:]
+		default:
+			words = append(words, f)
+		}
+	}
+	return strings.Join(words, " "), project, due
+}
+
+// dueBadge maps a deadline to an urgency glyph, color, and compact label.
+// Overdue → red "!", due today/≤2d → amber "!", further out → dim.
+func (m Model) dueBadge(due string) (string, lipgloss.Color, string) {
+	if due == "" {
+		return " ", lipgloss.Color("244"), "—"
+	}
+	t, err := time.Parse(dateLayout, due)
+	if m.today == "" || err != nil {
+		return " ", lipgloss.Color("244"), shortDate(due)
+	}
+	today, err2 := time.Parse(dateLayout, m.today)
+	if err2 != nil {
+		return " ", lipgloss.Color("244"), shortDate(due)
+	}
+	days := int(t.Sub(today).Hours() / 24)
+	switch {
+	case days < 0:
+		return "!", lipgloss.Color("203"), fmt.Sprintf("%dd", days) // e.g. -2d
+	case days == 0:
+		return "!", lipgloss.Color("214"), "today"
+	case days <= 2:
+		return "!", lipgloss.Color("214"), fmt.Sprintf("%dd", days)
+	case days <= 6:
+		return " ", lipgloss.Color("244"), fmt.Sprintf("%dd", days)
+	default:
+		return " ", lipgloss.Color("244"), shortDate(due)
+	}
 }
 
 // renderMain stacks the Range / Day / Timeline visualizations in the right
@@ -1037,12 +1414,55 @@ func (m Model) runningHeader() string {
 func (m Model) footerLine() string {
 	switch m.pane {
 	case paneRange:
-		return "j/k project · l drill · ←→ day · [ ] window · 1/7/3 span · b by · t today · s start · ? help · q quit"
+		return "j/k project · l drill · ←→ day · [ ] window · 1/7/3 span · b by · / search · s start · ? help · q quit"
 	case paneDay:
-		return "j/k task · l timeline · h back · p/r/c/d pause/resume/done/defer · a/m/n amend/move/note · x cancel · ? help"
+		return "j/k task · l timeline · h back · p/r/c/d pause/resume/done/defer · a/m/n amend/move/note · / search · ? help"
+	case panePending:
+		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h back · ? help"
 	default:
-		return "j/k scroll · ^d/^u page · h back · s start · ? help · q quit"
+		return "j/k scroll · ^d/^u page · h back · / search · s start · ? help · q quit"
 	}
+}
+
+// searchOverlay renders the search prompt and its results list (one task per
+// row: status glyph, id, description, project, day, duration), windowed to fit.
+func (m Model) searchOverlay(w int) string {
+	cw := w - 4 // panel content width
+	var b strings.Builder
+	b.WriteString(inputStyle.Render("/"+m.search.query+"▏") + "\n")
+	if len(m.search.results) == 0 {
+		if m.search.query == "" {
+			b.WriteString(dimStyle.Render("  (no recorded tasks)"))
+		} else {
+			b.WriteString(dimStyle.Render("  (no matches)"))
+		}
+		return b.String()
+	}
+	rows := make([]string, len(m.search.results))
+	for i, r := range m.search.results {
+		g, gc := statusGlyph(r.Status)
+		meta := fmt.Sprintf("[%s]  %s  %s", r.Project, r.Date, fmtDur(r.Minutes))
+		desc := r.Desc
+		if desc == "" {
+			desc = "(no description)"
+		}
+		if i == m.search.sel {
+			plain := fmt.Sprintf("%s %-4s %-32.32s %s", g, r.ID, desc, meta)
+			rows[i] = selStyle.Render(padRight(plain, cw))
+		} else {
+			left := fmt.Sprintf("%-4s %-32.32s", r.ID, desc)
+			rows[i] = lipgloss.NewStyle().Foreground(gc).Render(g) + " " +
+				lipgloss.NewStyle().Foreground(ProjectColor(r.Project)).Render(left) + " " +
+				dimStyle.Render(meta)
+		}
+	}
+	maxRows := 200
+	if m.height > 8 {
+		maxRows = m.height - 8 // leave room for header, prompt, borders, footer
+	}
+	rows = windowRows(rows, m.search.sel, maxRows)
+	b.WriteString(strings.Join(rows, "\n"))
+	return b.String()
 }
 
 // helpOverlay is the full keymap, shown when ? is pressed.
@@ -1054,15 +1474,21 @@ func (m Model) helpOverlay() string {
 		{"g / G", "jump to first / last"},
 		{"Ctrl+d / Ctrl+u", "half-page down / up"},
 		{"← / →", "previous / next day (from any panel)"},
-		{"Tab / Shift+Tab", "cycle panels: Projects → Tasks → Timeline"},
+		{"Tab / Shift+Tab", "cycle panels: Projects → Tasks → Timeline → Pending"},
 		{"Enter", "drill in (alias for l) · Esc returns to Projects"},
 		{"[ / ]", "shift the date window earlier / later"},
 		{"t", "jump to today / recenter the window"},
 		{"1 / 7 / 3", "set window span: 1 / 7 / 30 days"},
 		{"~View", ""},
+		{"/", "search all tasks (id / project / description); Enter jumps"},
 		{"b", "toggle the Projects rows between project and task"},
 		{"", "selecting a project filters the day's Tasks"},
 		{"Ctrl+R", "reload everything from disk"},
+		{"~Pending (backlog panel)", ""},
+		{"a", "add: 'desc @project !YYYY-MM-DD' (project/due optional)"},
+		{"d", "set / clear the selected task's deadline"},
+		{"Enter", "start (promote) the selected pending task"},
+		{"[ / ]", "move it up / down · x drop it"},
 		{"~Actions (on the selected task)", ""},
 		{"s", "start a new task"},
 		{"p / r / c / d", "pause / resume / complete / defer"},
@@ -1100,11 +1526,18 @@ func (m Model) renderProjects(cw, maxRows int) string {
 	for _, r := range m.g.Rows {
 		total += r.TotalMinutes
 	}
+	active := m.activeProject()
 	items := make([]string, 0, len(m.g.Rows)+1)
-	items = append(items, listLine("All", fmtDur(total), lipgloss.Color("250"), m.focusedRow == 0, cw))
+	items = append(items, listLine(" ", lipgloss.Color("244"), lipgloss.Color("250"),
+		"All", fmtDur(total), m.focusedRow == 0, cw))
 	for i, r := range m.g.Rows {
-		items = append(items, listLine(r.Label, fmtDur(r.TotalMinutes),
-			ProjectColor(rowProject(r)), m.focusedRow == i+1, cw))
+		p := rowProject(r)
+		glyph, gc := " ", lipgloss.Color("78")
+		if p != "" && p == active {
+			glyph = ">" // this project has the running task
+		}
+		items = append(items, listLine(glyph, gc, ProjectColor(p),
+			r.Label, fmtDur(r.TotalMinutes), m.focusedRow == i+1, cw))
 	}
 	items = windowRows(items, m.focusedRow, maxRows)
 	return strings.Join(items, "\n")
@@ -1128,25 +1561,106 @@ func (m Model) renderTasks(cw, maxRows int) string {
 		} else {
 			label = t.ID + " " + t.Project
 		}
-		items[i] = listLine(label, fmtDur(t.Minutes), ProjectColor(t.Project), i == m.selTask, cw)
+		glyph, gc := statusGlyph(t.Status)
+		items[i] = listLine(glyph, gc, ProjectColor(t.Project), label, fmtDur(t.Minutes), i == m.selTask, cw)
 	}
 	items = windowRows(items, m.selTask, maxRows)
 	return strings.Join(items, "\n")
 }
 
-// listLine formats one sidebar row: a left label and a right-aligned value,
-// padded to cw. The selected row is reverse-highlighted; others get the
-// project hue on the label.
-func listLine(left, right string, color lipgloss.Color, selected bool, cw int) string {
-	leftMax := cw - 3 - len([]rune(right)) // 2 marker cols + 1 gap
+// listLine formats one sidebar row: a status glyph, a left label, and a
+// right-aligned value, padded to cw. The glyph carries the status hue and the
+// label the project hue, so both read at once; the selected row is
+// reverse-highlighted (which replaces the old "> " cursor).
+func listLine(glyph string, glyphColor, labelColor lipgloss.Color, left, right string, selected bool, cw int) string {
+	leftMax := cw - 3 - len([]rune(right)) // glyph(1) + space(1) + gap(1)
 	if leftMax < 1 {
 		leftMax = 1
 	}
 	l := padRight(left, leftMax)
 	if selected {
-		return selStyle.Render(padRight("> "+l+" "+right, cw))
+		return selStyle.Render(padRight(glyph+" "+l+" "+right, cw))
 	}
-	return "  " + lipgloss.NewStyle().Foreground(color).Render(l) + " " + dimStyle.Render(right)
+	return lipgloss.NewStyle().Foreground(glyphColor).Render(glyph) + " " +
+		lipgloss.NewStyle().Foreground(labelColor).Render(l) + " " + dimStyle.Render(right)
+}
+
+// statusGlyph maps a task status to its ASCII glyph and accent color. The same
+// glyph set is used in the task lists, the header rollup, and the legend key.
+func statusGlyph(status string) (string, lipgloss.Color) {
+	switch status {
+	case "in-progress":
+		return ">", lipgloss.Color("78") // green — running now
+	case "paused":
+		return "=", lipgloss.Color("214") // amber
+	case "deferred":
+		return "»", lipgloss.Color("39") // blue
+	case "completed":
+		return "x", lipgloss.Color("244") // dim — done
+	case "cancelled":
+		return "x", lipgloss.Color("240")
+	default:
+		return " ", lipgloss.Color("244")
+	}
+}
+
+// activeProject is the project of today's in-progress task ("" if none),
+// used to flag the running project in the Projects list.
+func (m Model) activeProject() string {
+	if m.live == nil {
+		return ""
+	}
+	for _, t := range m.live.Tasks {
+		if t.Status == "in-progress" {
+			return t.Project
+		}
+	}
+	return ""
+}
+
+// todayRollup is a compact count of today's tasks by status plus the day total,
+// e.g. ">1 =0 x4 · Σ16h44m" (empty until today's status has loaded).
+func (m Model) todayRollup() string {
+	if m.live == nil {
+		return ""
+	}
+	var run, paused, deferred, done int
+	for _, t := range m.live.Tasks {
+		switch t.Status {
+		case "in-progress":
+			run++
+		case "paused":
+			paused++
+		case "deferred":
+			deferred++
+		case "completed":
+			done++
+		}
+	}
+	seg := func(st string, n int) string {
+		g, c := statusGlyph(st)
+		return lipgloss.NewStyle().Foreground(c).Render(g) + dimStyle.Render(fmt.Sprintf("%d", n))
+	}
+	counts := seg("in-progress", run) + " " + seg("paused", paused)
+	if deferred > 0 {
+		counts += " " + seg("deferred", deferred)
+	}
+	counts += " " + seg("completed", done)
+	return counts + dimStyle.Render(" · Σ"+fmtDur(m.live.TotalMinutes))
+}
+
+// statusKey is the legend's decoder for the status glyphs.
+func statusKey() string {
+	items := []struct{ st, label string }{
+		{"in-progress", "running"}, {"paused", "paused"},
+		{"deferred", "deferred"}, {"completed", "done"},
+	}
+	parts := make([]string, len(items))
+	for i, it := range items {
+		g, c := statusGlyph(it.st)
+		parts[i] = lipgloss.NewStyle().Foreground(c).Render(g) + " " + dimStyle.Render(it.label)
+	}
+	return dimStyle.Render("   ·   ") + strings.Join(parts, "  ")
 }
 
 // renderRange draws the multi-day matrix with per-project colored intensity
@@ -1253,11 +1767,14 @@ func (m Model) renderDay(innerW, maxBody int) string {
 			}
 		}
 		barStr := lipgloss.NewStyle().Foreground(color).Render(string(cells))
-		label := fmt.Sprintf("%-4s %-12.12s", t.ID, t.Project)
+		glyph, gc := statusGlyph(t.Status)
+		body := padRight(fmt.Sprintf("%-4s %s", t.ID, t.Project), lw-2) // glyph(1)+space(1)
+		var label string
 		if ti == m.selTask {
-			label = selStyle.Render(padRight(label, lw))
+			label = selStyle.Render(padRight(glyph+" "+body, lw))
 		} else {
-			label = lipgloss.NewStyle().Foreground(color).Render(padRight(label, lw))
+			label = lipgloss.NewStyle().Foreground(gc).Render(glyph) + " " +
+				lipgloss.NewStyle().Foreground(color).Render(body)
 		}
 		rows[ti] = label + barStr + " " + fmtDur(t.Minutes)
 	}

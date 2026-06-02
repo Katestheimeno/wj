@@ -164,8 +164,29 @@ day_file() {
     printf '%s/%s/%s/%s.tsv' "$WJ_DATA_DIR" "${d:0:4}" "${d:5:2}" "${d:8:2}"
 }
 
+# the backlog file of pending (not-yet-started) tasks. Unlike the day logs this
+# is mutable (add/drop/edit/reorder); line order is the user's manual priority.
+# Columns: id  created  project  due  desc
+pending_file() { printf '%s/pending.tsv' "$WJ_DATA_DIR"; }
+
+# split a TSV line ($1) into PF[] preserving empty fields. `read -r a b c`
+# with IFS=$'\t' can't be used here: tab is IFS-whitespace, so it merges
+# consecutive tabs and drops empty columns (e.g. an empty project/due).
+declare -a PF=()
+tsv_split() {
+    local line=$1
+    PF=()
+    while [[ $line == *$'\t'* ]]; do PF+=("${line%%$'\t'*}"); line=${line#*$'\t'}; done
+    PF+=("$line")
+}
+
+# strip tab / CR / newline from a field so user text can't break the TSV layout
+# (a stray tab shifts columns; a newline forges a whole phantom row).
+sanitize() { local v=${1//[$'\t\r\n']/ }; printf '%s' "$v"; }
+
 append_event() {
     local ts=$1 id=$2 proj=$3 evt=$4 note=${5:-} file
+    proj=$(sanitize "$proj"); note=$(sanitize "$note")
     file=$(day_file "${ts:0:10}")
     mkdir -p "$(dirname "$file")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$id" "$proj" "$evt" "$note" >>"$file"
@@ -315,9 +336,17 @@ find_task() {
 # ---------------------------------------------------------------------------
 # Argument parsing — extract global flags, leave positionals in ARGS[]
 # ---------------------------------------------------------------------------
-AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; JSON=0
+AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; DUE=""; JSON=0
 declare -a ARGS=()
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
+# whether $1 is a real calendar date in YYYY-MM-DD form. GNU `date -d` would
+# silently roll over 2026-02-31 / 2026-13-99, so we round-trip and compare.
+valid_date() {
+    [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+    local norm
+    norm=$(date -d "$1" +%Y-%m-%d 2>/dev/null) || return 1
+    [[ $norm == "$1" ]]
+}
 parse_args() {
     while (( $# )); do
         case $1 in
@@ -329,6 +358,7 @@ parse_args() {
             --format)   need_val "$@"; FORMAT=$2;   shift 2 ;;
             --by)       need_val "$@"; BY=$2;       shift 2 ;;
             --days)     need_val "$@"; DAYS=$2;     shift 2 ;;
+            --due)      need_val "$@"; DUE=$2;      shift 2 ;;
             --json)     JSON=1;                     shift ;;
             --)         shift; while (( $# )); do ARGS+=("$1"); shift; done ;;
             *)          ARGS+=("$1"); shift ;;
@@ -339,7 +369,7 @@ parse_args() {
         norm=$(normalize_time "$AT") || die "--at: cannot parse '$AT' (examples: 9, 930, 9:30, 9pm, 9.30)"
         AT=$norm
     fi
-    [[ -z $ON || $ON =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "--date must be YYYY-MM-DD (got '$ON')"
+    [[ -z $ON ]] || valid_date "$ON" || die "--date must be a real date YYYY-MM-DD (got '$ON')"
 }
 
 TODAY=$(date +%Y-%m-%d)
@@ -380,7 +410,17 @@ cur_project() {
 # Commands
 # ---------------------------------------------------------------------------
 cmd_start() {
-    local desc=${ARGS[*]:-}
+    local desc
+    if [[ ${ARGS[0]:-} =~ ^P[0-9]+$ ]]; then
+        # promote a pending task: carry its description + project, then drop it
+        local pid=${ARGS[0]}
+        pending_get "$pid" || die "no such pending task: $pid"
+        desc=$PEND_DESC
+        [[ -n $PROJECT_OVERRIDE ]] || PROJECT_OVERRIDE=$PEND_PROJ
+        pending_remove "$pid"
+    else
+        desc=${ARGS[*]:-}
+    fi
     [[ -n $desc ]] || die "start needs a description"
     local proj ts file id active
     proj=$(cur_project); ts=$(now_ts); file=$(day_file "${ts:0:10}")
@@ -917,6 +957,201 @@ cmd_gantt() {
     printf '\n'
 }
 
+# ---------------------------------------------------------------------------
+# Pending backlog — not-yet-started tasks, kept in a separate mutable file and
+# invisible to the time views until promoted via `wj start P#`.
+# ---------------------------------------------------------------------------
+
+# highest existing P# in the backlog (0 if none)
+pending_max_id() {
+    local f id rest n max=0
+    f=$(pending_file)
+    [[ -f $f ]] || { echo 0; return; }
+    while IFS=$'\t' read -r id rest || [[ -n $id ]]; do
+        n=${id#P}
+        [[ $n =~ ^[0-9]+$ ]] && (( n > max )) && max=$n
+    done <"$f"
+    echo "$max"
+}
+
+# look up a pending entry, setting PEND_PROJ / PEND_DESC; return 1 if absent
+PEND_PROJ=""; PEND_DESC=""
+pending_get() {
+    local want=$1 f line
+    f=$(pending_file); [[ -f $f ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        tsv_split "$line"
+        [[ ${PF[0]:-} == "$want" ]] && { PEND_PROJ=${PF[2]:-}; PEND_DESC=${PF[4]:-}; return 0; }
+    done <"$f"
+    return 1
+}
+
+# remove the entry with id $1; return 1 if not found
+pending_remove() {
+    local want=$1 f tmp found=1 line id
+    f=$(pending_file); [[ -f $f ]] || return 1
+    tmp=$(mktemp "$f.XXXXXX") # same dir as $f so the mv is an atomic rename
+    while IFS= read -r line || [[ -n $line ]]; do
+        id=${line%%$'\t'*}
+        [[ $id == "$want" ]] && { found=0; continue; }
+        printf '%s\n' "$line" >>"$tmp"
+    done <"$f"
+    mv "$tmp" "$f"
+    return $found
+}
+
+# set (or clear, when $2 is empty) the due date of entry $1; return 1 if absent
+pending_set_due() {
+    local want=$1 newdue=$2 f tmp found=1 line
+    f=$(pending_file); [[ -f $f ]] || return 1
+    tmp=$(mktemp "$f.XXXXXX")
+    while IFS= read -r line || [[ -n $line ]]; do
+        tsv_split "$line"
+        [[ ${PF[0]:-} == "$want" ]] && { PF[3]=$newdue; found=0; }
+        printf '%s\t%s\t%s\t%s\t%s\n' "${PF[0]:-}" "${PF[1]:-}" "${PF[2]:-}" "${PF[3]:-}" "${PF[4]:-}" >>"$tmp"
+    done <"$f"
+    mv "$tmp" "$f"
+    return $found
+}
+
+# swap entry $1 with its neighbour ($2 = up|down); edge moves are a no-op
+pending_move() {
+    local want=$1 dir=$2 f line i idx=-1 n j tmp out
+    f=$(pending_file); [[ -f $f ]] || return 1
+    local -a lines=()
+    while IFS= read -r line || [[ -n $line ]]; do lines+=("$line"); done <"$f"
+    n=${#lines[@]}
+    for (( i=0; i<n; i++ )); do
+        [[ ${lines[i]%%$'\t'*} == "$want" ]] && { idx=$i; break; }
+    done
+    (( idx < 0 )) && return 1
+    if [[ $dir == up ]]; then j=$(( idx - 1 )); else j=$(( idx + 1 )); fi
+    (( j < 0 || j >= n )) && return 0 # already at the edge
+    tmp=${lines[idx]}; lines[idx]=${lines[j]}; lines[j]=$tmp
+    out=$(mktemp "$f.XXXXXX")
+    for (( i=0; i<n; i++ )); do printf '%s\n' "${lines[i]}" >>"$out"; done
+    mv "$out" "$f"
+}
+
+cmd_add() {
+    local desc proj
+    desc=$(sanitize "${ARGS[*]:-}"); proj=$(sanitize "$PROJECT_OVERRIDE")
+    [[ -n $desc ]] || die "add needs a description (e.g. wj add \"Fix invoice\")"
+    [[ -z $DUE ]] || valid_date "$DUE" || die "--due must be a real date YYYY-MM-DD (got '$DUE')"
+    local f id created
+    f=$(pending_file); mkdir -p "$(dirname "$f")"
+    id="P$(( $(pending_max_id) + 1 ))"
+    created=$(date +%Y-%m-%dT%H:%M)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$created" "$proj" "$DUE" "$desc" >>"$f"
+    printf '%s  added%s%s — %s\n' "$id" "${proj:+ [$proj]}" "${DUE:+ (due $DUE)}" "$desc"
+}
+
+cmd_pending() {
+    local f line id created proj due desc first=1 found=0
+    f=$(pending_file)
+    if (( JSON )); then
+        printf '['
+        if [[ -f $f ]]; then
+            while IFS= read -r line || [[ -n $line ]]; do
+                tsv_split "$line"; id=${PF[0]:-}
+                [[ -n $id ]] || continue
+                (( first )) && first=0 || printf ','
+                printf '{"id":%s,"created":%s,"project":%s,"due":%s,"desc":%s}' \
+                    "$(json_str "$id")" "$(json_str "${PF[1]:-}")" "$(json_str "${PF[2]:-}")" \
+                    "$(json_str "${PF[3]:-}")" "$(json_str "${PF[4]:-}")"
+            done <"$f"
+        fi
+        printf ']\n'
+        return
+    fi
+    printf '\nPending\n\n'
+    if [[ -f $f ]]; then
+        while IFS= read -r line || [[ -n $line ]]; do
+            tsv_split "$line"; id=${PF[0]:-}
+            [[ -n $id ]] || continue
+            found=1; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
+            printf '%-4s  %-16.16s  %-10s  %s\n' "$id" "${proj:-—}" "${due:-—}" "$desc"
+        done <"$f"
+    fi
+    (( found )) || printf '  (empty)\n'
+    printf '\n'
+}
+
+cmd_drop() {
+    local id=${ARGS[0]:-}
+    [[ $id =~ ^P[0-9]+$ ]] || die "drop needs a pending id (e.g. wj drop P2)"
+    pending_remove "$id" || die "no such pending task: $id"
+    printf '%s  dropped\n' "$id"
+}
+
+cmd_due() {
+    local id=${ARGS[0]:-} val=${ARGS[1]:-}
+    [[ $id =~ ^P[0-9]+$ ]] || die "due needs a pending id (e.g. wj due P2 2026-06-10)"
+    [[ -n $val ]] || die "due needs a date (YYYY-MM-DD) or - to clear"
+    [[ $val == - ]] && val=""
+    [[ -z $val ]] || valid_date "$val" || die "due date must be a real date YYYY-MM-DD or - (got '$val')"
+    pending_set_due "$id" "$val" || die "no such pending task: $id"
+    printf '%s  due %s\n' "$id" "${val:-cleared}"
+}
+
+cmd_raise() {
+    local id=${ARGS[0]:-}
+    [[ $id =~ ^P[0-9]+$ ]] || die "raise needs a pending id (e.g. wj raise P2)"
+    pending_move "$id" up || die "no such pending task: $id"
+}
+
+cmd_lower() {
+    local id=${ARGS[0]:-}
+    [[ $id =~ ^P[0-9]+$ ]] || die "lower needs a pending id (e.g. wj lower P2)"
+    pending_move "$id" down || die "no such pending task: $id"
+}
+
+# search every recorded task (all-time) by a case-insensitive substring,
+# matched against the task id, project, and current description. Most-recent
+# day first. --json emits the array the wj-tui search overlay consumes.
+cmd_search() {
+    local q=${ARGS[0]:-}
+    local ql=${q,,}
+
+    if (( JSON )); then printf '['; else printf '\nSearch %s\n\n' "${q:-(all)}"; fi
+    local first=1 found=0
+
+    if [[ -d $WJ_DATA_DIR ]]; then
+        local file base dd mm yyyy d id proj desc st mins nm hay
+        while IFS= read -r file; do
+            base=${file%.tsv}
+            dd=${base##*/};   base=${base%/*}
+            mm=${base##*/};   base=${base%/*}
+            yyyy=${base##*/}
+            [[ $yyyy =~ ^[0-9]{4}$ && $mm =~ ^[0-9]{2}$ && $dd =~ ^[0-9]{2}$ ]] || continue
+            d="$yyyy-$mm-$dd"
+            nm=$(hm_to_min "$shift_end"); [[ $d == "$TODAY" ]] && nm=$(now_min)
+            while read -r id; do
+                [[ -z $id ]] && continue
+                task_cancelled "$file" "$id" && continue
+                proj=$(task_project "$file" "$id")
+                desc=$(task_desc "$file" "$id")
+                hay="$id $proj $desc"
+                [[ -z $ql || ${hay,,} == *"$ql"* ]] || continue
+                st=$(task_status "$file" "$id")
+                mins=$(task_minutes "$file" "$id" "$nm")
+                found=1
+                if (( JSON )); then
+                    (( first )) && first=0 || printf ','
+                    printf '{"id":%s,"date":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d}' \
+                        "$(json_str "$id")" "$(json_str "$d")" "$(json_str "$proj")" \
+                        "$(json_str "$desc")" "$(json_str "$st")" "$mins"
+                else
+                    printf '%-12s  %-4s  %-16.16s  %-8s  %7s  %s\n' \
+                        "$d" "$id" "$proj" "$st" "$(fmt_dur "$mins")" "$desc"
+                fi
+            done < <(task_ids "$file")
+        done < <(find "$WJ_DATA_DIR" -name '*.tsv' -type f 2>/dev/null | sort -r)
+    fi
+
+    if (( JSON )); then printf ']\n'; else (( found )) || printf '  (no matches)\n'; printf '\n'; fi
+}
+
 cmd_export() {
     local from=${FROM:-$TODAY} to=${TO:-$TODAY} d file
     case $FORMAT in
@@ -950,6 +1185,8 @@ cmd_export() {
 
 # internal: today's task ids (for shell completion)
 list_task_ids() { task_ids "$(day_file "$TODAY")"; }
+# internal: pending P# ids (for shell completion)
+list_pending_ids() { local f; f=$(pending_file); [[ -f $f ]] && awk -F'\t' '{print $1}' "$f"; }
 # internal: distinct project names ever seen (for shell completion)
 list_projects() {
     [[ -d $WJ_DATA_DIR ]] || return 0
@@ -966,8 +1203,8 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start pause resume complete defer log amend move cancel ls show status grid gantt report export ui config completion version help"
-    flags="--at --date --project --from --to --format --by --days --json"
+    cmds="start pause resume complete defer log amend move cancel ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
+    flags="--at --date --project --from --to --format --by --days --due --json"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
     fi
@@ -982,6 +1219,10 @@ _wj() {
     case $cmd in
         pause|resume|complete|defer|amend|move|cancel|show)
             COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") ) ;;
+        drop|due|raise|lower)
+            COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") ) ;;
+        start)
+            COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") ) ;;
     esac
 }
 complete -F _wj wj
@@ -1003,8 +1244,9 @@ USAGE
   Run with no command to show today's status.
 
 TASK COMMANDS
-  start <desc>        Begin a new task. Gets the next id (T1, T2, ... per day).
-                      Auto-pauses any running task in the SAME project.
+  start <desc|P#>     Begin a new task. Gets the next id (T1, T2, ... per day).
+                      Auto-pauses any running task in the SAME project. Given a
+                      pending id (P#) it promotes that backlog item instead.
   pause  [id] [why]   Pause the running task (or the given id). Stops its clock.
   resume [id]         Resume the most-recent paused/deferred task (or given id).
   complete [id]       Finish a task: sum its time and, in a git repo, record the
@@ -1016,6 +1258,17 @@ TASK COMMANDS
   move  [id] <proj>   Re-home a task to another project (fix wrong auto-detection).
   cancel [id]         Void a mistaken task: 0 time, hidden from status/grid/report
                       (kept in the raw log / export for audit).
+
+PENDING (BACKLOG)
+  add <desc>          Add a not-yet-started task to the backlog (id P1, P2, ...).
+                      --project X sets its project; --due YYYY-MM-DD a deadline.
+                      Pending tasks stay out of the time views until promoted.
+  pending             List the backlog in manual (pinned) order.
+  due <P#> <date|->   Set or clear (-) a pending task's deadline.
+  raise <P#>          Move a pending task one step up (lower = one step down).
+  lower <P#>          Move a pending task one step down.
+  drop <P#>           Remove a pending task without starting it.
+                      (Use `start P#` to promote one into a tracked task.)
 
 VIEW & ANALYSIS
   ls                  List currently-open tasks (in-progress / paused / deferred).
@@ -1029,11 +1282,13 @@ VIEW & ANALYSIS
   gantt  [flags]      Multi-day overview: rows (--by project|task) x days of time.
                       Default range: last 7 days through --to. The headline UI view.
                       --by task lists each day's tasks separately (ids are per-day).
+  search <query>      Find tasks (all-time) by id / project / description substring.
+                      Scans every recorded day; most-recent first. --json for the UI.
   report [flags]      Aggregate time across a date range, grouped by --by.
   export [flags]      Dump raw events as csv / json / tsv over a date range.
 
-  Most read views (status, ls, show, grid, gantt) also accept --json for a stable
-  machine-readable contract — this is what the `ui` front-end consumes.
+  Read views (status, show, grid, gantt, search, pending) also accept --json for a
+  stable machine-readable contract — this is what the `ui` front-end consumes.
 
 OTHER
   ui                  Launch the wj-tui front-end (requires the wj-tui binary).
@@ -1055,8 +1310,10 @@ FLAGS
   --project NAME      Override project detection. Use for non-git work, e.g.
                       --project meetings / --project "maroc ventes" / --project admin.
                       On start: where the task lives. On pause/complete/etc: scope.
-  --from D --to D     Inclusive date range YYYY-MM-DD (report, export). Default: today.
-  --by KEY            report grouping: project | task | day. Default: project.
+  --from D --to D     Inclusive date range YYYY-MM-DD (report, export, gantt).
+  --by KEY            row grouping: project | task | day (report); project | task
+                      (gantt). Default: project.
+  --due YYYY-MM-DD    add: optional deadline for a pending task.
   --format FMT        export format: csv | json | tsv. Default: csv.
 
 STATUSES & GRID SYMBOLS
@@ -1156,11 +1413,19 @@ main() {
         show)     cmd_show ;;
         status)   cmd_status ;;
         grid)     cmd_grid ;;
+        search)   cmd_search ;;
+        add)      cmd_add ;;
+        pending)  cmd_pending ;;
+        drop)     cmd_drop ;;
+        due)      cmd_due ;;
+        raise)    cmd_raise ;;
+        lower)    cmd_lower ;;
         report)   cmd_report ;;
         export)   cmd_export ;;
         completion) cmd_completion ;;
         config)   printf '%s\n' "$WJ_CONFIG" ;;
         _tasks)   list_task_ids ;;
+        _pending) list_pending_ids ;;
         _projects) list_projects ;;
         help|-h|--help) cmd_help ;;
         *)        die "unknown command: $cmd (try 'wj help')" ;;

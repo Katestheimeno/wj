@@ -165,6 +165,9 @@ func TestPaneCycle(t *testing.T) {
 	if m = step(m, "tab"); m.pane != paneTimeline {
 		t.Fatalf("tab -> %d, want paneTimeline", m.pane)
 	}
+	if m = step(m, "tab"); m.pane != panePending {
+		t.Fatalf("tab -> %d, want panePending", m.pane)
+	}
 	if m = step(m, "tab"); m.pane != paneRange {
 		t.Fatalf("tab wraps -> %d, want paneRange", m.pane)
 	}
@@ -548,4 +551,194 @@ func stripANSI(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func TestSearchOpenAndJump(t *testing.T) {
+	m := sampleModel()
+	m.today = "2026-06-01"
+	// "/" opens the overlay and primes an (empty-query) search
+	m, cmd := mustModel(m.handleKey(keyMsg("/")))
+	if !m.search.active || cmd == nil {
+		t.Fatalf("'/' should open search and run a query, got active=%v cmd=%v", m.search.active, cmd)
+	}
+	// a result for the live query is accepted; a stale one is dropped
+	stale, _ := mustModel(m.Update(searchMsg{query: "old", results: []wj.Found{{ID: "T9"}}}))
+	if len(stale.search.results) != 0 {
+		t.Error("a searchMsg for a stale query must be ignored")
+	}
+	m, _ = mustModel(m.Update(searchMsg{query: "", results: []wj.Found{
+		{ID: "T2", Date: "2026-05-30", Project: "backend", Desc: "Refactor auth", Status: "completed", Minutes: 90},
+	}}))
+	if len(m.search.results) != 1 {
+		t.Fatalf("matching searchMsg should populate results, got %d", len(m.search.results))
+	}
+	// Enter jumps: closes overlay, windows the range onto the hit, arms the task
+	m, cmd = mustModel(m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}))
+	if m.search.active {
+		t.Error("enter should close the search overlay")
+	}
+	if m.to != "2026-05-30" || m.from != "2026-05-24" {
+		t.Errorf("jump should window onto the hit: from=%q to=%q", m.from, m.to)
+	}
+	if m.jumpTaskID != "T2" || m.pane != paneTimeline || cmd == nil {
+		t.Errorf("jump should arm T2 + drill + reload: jump=%q pane=%d cmd=%v", m.jumpTaskID, m.pane, cmd)
+	}
+	// when that day's grid lands, the armed task is selected and cleared
+	m, _ = mustModel(m.Update(ganttMsg{g: &wj.Gantt{From: "2026-05-24", To: "2026-05-30",
+		Days: []string{"2026-05-30"}, Rows: m.g.Rows}}))
+	m, _ = mustModel(m.Update(gridMsg{day: "2026-05-30", g: &wj.Grid{Date: "2026-05-30",
+		Tasks: []wj.GridTask{{ID: "T1", Project: "x"}, {ID: "T2", Project: "backend"}}}}))
+	if m.jumpTaskID != "" {
+		t.Error("jumpTaskID should be cleared after landing")
+	}
+	if m.selectedTaskID() != "T2" {
+		t.Errorf("grid landing should select the jumped task, got %q", m.selectedTaskID())
+	}
+}
+
+func TestSearchEscCancels(t *testing.T) {
+	m := sampleModel()
+	m, _ = mustModel(m.handleKey(keyMsg("/")))
+	m, _ = mustModel(m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}))
+	if m.search.active {
+		t.Error("esc should close the search overlay")
+	}
+}
+
+// pendingModel returns a model focused on the backlog with a few items.
+func pendingModel() Model {
+	m := sampleModel()
+	m.today = "2026-06-02"
+	m.pane = panePending
+	m.pending = []wj.Pending{
+		{ID: "P1", Project: "Acme", Due: "2026-06-01", Desc: "Fix invoice"},   // overdue
+		{ID: "P2", Due: "2026-06-02", Desc: "Call client"},                    // today
+		{ID: "P3", Project: "Ideas", Desc: "Write blog"},                      // no due
+	}
+	return m
+}
+
+func TestPendingAddOpensPrompt(t *testing.T) {
+	m, _ := mustModel(pendingModel().handleKey(keyMsg("a")))
+	if !m.input.active || m.input.action != "add" {
+		t.Fatalf("'a' should open the add prompt, got %+v", m.input)
+	}
+	// typing + enter issues `add <desc>` (a plain mutate, no date prompt)
+	for _, k := range []string{"H", "i"} {
+		m, _ = mustModel(m.handleKey(keyMsg(k)))
+	}
+	m, cmd := mustModel(m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}))
+	if m.input.active || cmd == nil {
+		t.Errorf("enter should close prompt and issue add, got active=%v cmd=%v", m.input.active, cmd)
+	}
+}
+
+func TestPendingPromoteAndDrop(t *testing.T) {
+	// Enter promotes the selected pending task (P1)
+	m := pendingModel()
+	if _, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Error("enter on a pending task should issue a start (promote)")
+	}
+	// 'x' opens a *raw* drop confirm (no --date round-trip)
+	m, _ = mustModel(m.handleKey(keyMsg("x")))
+	if !m.confirm.active || m.confirm.verb != "drop" || !m.confirm.raw {
+		t.Fatalf("'x' should arm a raw drop confirm, got %+v", m.confirm)
+	}
+	m, cmd := mustModel(m.handleKey(keyMsg("y")))
+	if m.confirm.active || cmd == nil {
+		t.Error("'y' should run the drop")
+	}
+}
+
+func TestPendingDueAndReorder(t *testing.T) {
+	m := pendingModel()
+	// 'd' opens the due prompt targeting the selected id
+	d, _ := mustModel(m.handleKey(keyMsg("d")))
+	if !d.input.active || d.input.action != "pdue" || d.input.taskID != "P1" {
+		t.Fatalf("'d' should open a due prompt for P1, got %+v", d.input)
+	}
+	// ']' lowers and follows the item
+	m.selPend = 0
+	low, cmd := mustModel(m.handleKey(keyMsg("]")))
+	if cmd == nil || low.selPend != 1 {
+		t.Errorf("']' should lower P1 and follow it: sel=%d cmd=%v", low.selPend, cmd)
+	}
+}
+
+func TestDueBadge(t *testing.T) {
+	m := Model{today: "2026-06-02"}
+	cases := []struct {
+		due, wantGlyph, wantLabel string
+	}{
+		{"", " ", "—"},
+		{"2026-06-01", "!", "-1d"},  // overdue
+		{"2026-06-02", "!", "today"},
+		{"2026-06-03", "!", "1d"},   // due soon
+		{"2026-06-20", " ", "06-20"}, // far out -> plain date
+	}
+	for _, c := range cases {
+		g, _, label := m.dueBadge(c.due)
+		if g != c.wantGlyph || label != c.wantLabel {
+			t.Errorf("dueBadge(%q) = (%q,%q), want (%q,%q)", c.due, g, label, c.wantGlyph, c.wantLabel)
+		}
+	}
+}
+
+func TestParsePendingInput(t *testing.T) {
+	cases := []struct{ in, d, p, due string }{
+		{"Fix invoice", "Fix invoice", "", ""},
+		{"Fix invoice @acme !2026-06-10", "Fix invoice", "acme", "2026-06-10"},
+		{"!2026-06-10 Call client @ventes", "Call client", "ventes", "2026-06-10"},
+		{"   spaced   out  ", "spaced out", "", ""},
+	}
+	for _, c := range cases {
+		d, p, due := parsePendingInput(c.in)
+		if d != c.d || p != c.p || due != c.due {
+			t.Errorf("parse(%q) = (%q,%q,%q), want (%q,%q,%q)", c.in, d, p, due, c.d, c.p, c.due)
+		}
+	}
+}
+
+func TestLayoutNeverOverflowsShortTerminal(t *testing.T) {
+	m := drilled()
+	for i := 0; i < 30; i++ {
+		m.grid.Tasks = append(m.grid.Tasks, wj.GridTask{ID: fmt.Sprintf("T%d", i+2), Project: "p", Minutes: 30})
+	}
+	// even pathologically short/narrow terminals must not render past the screen
+	for _, H := range []int{6, 8, 10, 14, 18, 22} {
+		for _, W := range []int{40, 60, 100} {
+			u, _ := m.Update(tea.WindowSizeMsg{Width: W, Height: H})
+			out := u.(Model).View()
+			lines := strings.Count(out, "\n") + 1
+			if lines > H {
+				t.Errorf("W=%d H=%d: rendered %d lines (overflow)", W, H, lines)
+			}
+			maxw := 0
+			for _, ln := range strings.Split(out, "\n") {
+				if x := lipgloss.Width(ln); x > maxw {
+					maxw = x
+				}
+			}
+			if maxw > W {
+				t.Errorf("W=%d H=%d: a line is %d cols wide (overflow)", W, H, maxw)
+			}
+		}
+	}
+}
+
+func TestFocusedRowFollowsProjectAcrossReload(t *testing.T) {
+	m := sampleModel() // rows: backend, meetings
+	m.focusedRow = 2   // "meetings" (index 0 = All, 1 = backend, 2 = meetings)
+	if m.projectFilter() != "meetings" {
+		t.Fatalf("setup: filter = %q, want meetings", m.projectFilter())
+	}
+	// reload with the rows in a different order; selection must follow by name
+	reordered := &wj.Gantt{From: m.from, To: m.to, Days: m.g.Days, Rows: []wj.GanttRow{
+		{Key: "meetings", Label: "meetings", Project: "meetings", PerDay: map[string]int{}},
+		{Key: "backend", Label: "backend", Project: "backend", PerDay: map[string]int{}},
+	}}
+	u, _ := m.Update(ganttMsg{g: reordered})
+	if got := u.(Model).projectFilter(); got != "meetings" {
+		t.Errorf("after reorder, filter = %q, want meetings (followed by identity)", got)
+	}
 }

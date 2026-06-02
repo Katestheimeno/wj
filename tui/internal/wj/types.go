@@ -78,6 +78,27 @@ type Gantt struct {
 	Rows []GanttRow `json:"rows"`
 }
 
+// Pending is one not-yet-started backlog task from `wj pending --json`. It has
+// no tracked time until promoted via `wj start P#`; Due is "" when unset.
+type Pending struct {
+	ID      string `json:"id"`
+	Created string `json:"created"`
+	Project string `json:"project"`
+	Due     string `json:"due"`
+	Desc    string `json:"desc"`
+}
+
+// Found is one hit from `wj search --json`: a task located by id/project/desc
+// substring, on a specific day. The (ID, Date) pair is enough to jump to it.
+type Found struct {
+	ID      string `json:"id"`
+	Date    string `json:"date"`
+	Project string `json:"project"`
+	Desc    string `json:"desc"`
+	Status  string `json:"status"`
+	Minutes int    `json:"minutes"`
+}
+
 // GanttRow is one project (or task) row. PerDay maps a date (YYYY-MM-DD) to
 // minutes worked; days with no work are absent (treat as zero).
 type GanttRow struct {

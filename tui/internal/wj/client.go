@@ -117,6 +117,25 @@ func (c Client) Grid(date string) (*Grid, error) {
 	return &g, nil
 }
 
+// Pending lists the backlog of not-yet-started tasks, in manual (pinned) order.
+func (c Client) Pending() ([]Pending, error) {
+	var out []Pending
+	if err := c.readJSON(&out, "pending"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Search finds tasks all-time by an id/project/description substring. An empty
+// query returns every recorded task (most-recent day first).
+func (c Client) Search(query string) ([]Found, error) {
+	var out []Found
+	if err := c.readJSON(&out, "search", query); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Show fetches one task's full timeline on a given day. Empty date means today.
 func (c Client) Show(id, date string) (*Show, error) {
 	args := []string{"show", id}

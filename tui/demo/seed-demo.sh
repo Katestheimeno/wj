@@ -52,6 +52,13 @@ wj complete T1                  --date 2026-06-02 --at 08:55
 wj start "CSS extraction"       --project MarocVentes --date 2026-06-02 --at 09:00
 # (no complete on T2 — it stays in-progress)
 
+# pending backlog — not-yet-started tasks with a mix of deadlines
+wj add "Send Q2 report"   --project Acme        --due 2026-06-01   # overdue
+wj add "Call supplier"    --project MarocVentes --due 2026-06-02   # due today
+wj add "Renew domain"     --project Infra        --due 2026-06-04   # due soon
+wj add "Write changelog"  --project Ideas                          # no deadline
+wj add "Plan Q3 roadmap"  --project Acme        --due 2026-06-20   # later
+
 echo "seeded $WJ_DATA_DIR"
 echo
 echo "launch the new TUI with:"

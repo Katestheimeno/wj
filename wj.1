@@ -23,9 +23,10 @@ is set to
 .IR ui ).
 .SH TASK COMMANDS
 .TP
-.BI "start " desc
+.BI "start " "desc | P#"
 Begin a new task; it gets the next id (T1, T2, ... per day). Auto-pauses any
-running task in the same project.
+running task in the same project. Given a pending id (P#) it promotes that
+backlog item instead, carrying its description and project.
 .TP
 .BI "pause " "[id] [why]"
 Pause the running task (or the given id). Stops its clock.
@@ -80,12 +81,42 @@ Aggregate time across a date range, grouped by \fB--by\fR.
 .TP
 .B export
 Dump raw events as csv / json / tsv over a date range.
+.TP
+.BI "search " query
+Find tasks across all recorded days by a case-insensitive substring of the id,
+project, or description. Most-recent first.
 .PP
 The read views
-.RB ( status ", " ls ", " show ", " grid ", " gantt )
+.RB ( status ", " show ", " grid ", " gantt ", " search ", " pending )
 also accept
 .B --json
 for a stable machine-readable contract \(em this is what the UI front-end consumes.
+.SH PENDING (BACKLOG)
+Tasks you have not started yet live in a separate backlog (ids P1, P2, ...,
+stored in \fIpending.tsv\fR). They stay out of the time views until promoted
+with \fBstart \fIP#\fR.
+.TP
+.BI "add " desc
+Add a backlog task.
+.B --project
+sets its project;
+.B --due
+a deadline.
+.TP
+.B pending
+List the backlog in manual (pinned) order.
+.TP
+.BI "due " "P# date|-"
+Set, or clear (\fB-\fR), a pending task's deadline.
+.TP
+.BI "raise " P#
+Move a pending task one step up.
+.TP
+.BI "lower " P#
+Move a pending task one step down.
+.TP
+.BI "drop " P#
+Remove a pending task without starting it.
 .SH OTHER
 .TP
 .B ui
@@ -136,8 +167,11 @@ Grouping: project | task | day (report); project | task (gantt).
 .BI "--format " FMT
 export format: csv | json | tsv. Default csv.
 .TP
+.BI "--due " YYYY-MM-DD
+Optional deadline for a pending task (add).
+.TP
 .B --json
-Emit a machine-readable view (status, ls, show, grid, gantt).
+Emit a machine-readable view (status, show, grid, gantt, search, pending).
 .SH CONFIGURATION
 Config lives at
 .I ~/.config/wj/config

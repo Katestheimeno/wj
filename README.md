@@ -135,7 +135,7 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 
 | Command | What it does |
 |---|---|
-| `wj start <desc>` | Begin a new task (next id `T1`, `T2`… per day). Auto-pauses the running task in the same project. |
+| `wj start <desc\|P#>` | Begin a new task (next id `T1`, `T2`… per day). Auto-pauses the running task in the same project. Given a pending id (`P#`) it promotes that backlog item instead (see [Pending backlog](#pending-backlog)). |
 | `wj pause [id] [why]` | Pause the running task (or a given id). Stops its clock. |
 | `wj resume [id]` | Resume the most-recent paused/deferred task (or a given id). |
 | `wj complete [id]` | Finish a task; sum its time; record git commits in its window. |
@@ -149,6 +149,7 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
 | `wj grid [date]` | Slot-by-slot schedule for a day. |
 | `wj gantt [flags]` | Multi-day overview: a rows×days matrix of time totals. Rows are projects (or per-day tasks with `--by task`); columns are days. Default range: the last 7 days through `--to` (or today). Cancelled and zero-time rows are omitted. The CLI counterpart of the TUI's Range view. |
+| `wj search <query>` | Find tasks across **all** recorded days by a case-insensitive substring of the id, project, or description. Most-recent first; `--json` for the UI's `/` overlay. |
 | `wj report [flags]` | Aggregate time over a date range, grouped by `--by`. |
 | `wj export [flags]` | Dump raw events as csv/json/tsv over a date range. |
 | `wj completion <shell>` | Print a shell-completion script (`bash` or `zsh`). |
@@ -167,11 +168,28 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `--by KEY` | report, gantt | Group rows. `report`: `project` \| `task` \| `day`. `gantt`: `project` \| `task`. Default: `project`. |
 | `--format FMT` | export | `csv` \| `json` \| `tsv`. Default: `csv`. |
 | `--days N` | ls | How many days back to scan for open tasks. Default: `1` (today). |
-| `--json` | status, show, grid, gantt | Emit machine-readable JSON instead of the text table — a stable contract (this is what the `wj-tui` front-end consumes). |
+| `--due YYYY-MM-DD` | add | Optional deadline for a pending task. |
+| `--json` | status, show, grid, gantt, search, pending | Emit machine-readable JSON instead of the text table — a stable contract (this is what the `wj-tui` front-end consumes). |
 
 If you omit `--project` on `pause`/`complete`/`log`/`amend`/`move`/`cancel`, the
 command acts on whatever is currently running. Pass `--project` to scope it to one
 project, or a task id (`T2`) to target a specific task in any state.
+
+### Pending backlog
+
+Tasks you intend to do but haven't started yet live in a separate backlog
+(`P1`, `P2`… ids, stored in `pending.tsv`). They carry an optional project and
+deadline and stay **out of** the time views — status, grid, gantt, reports — until
+you start one, at which point it becomes a normal tracked task.
+
+| Command | What it does |
+|---|---|
+| `wj add <desc>` | Add a backlog task. `--project NAME` sets its project; `--due YYYY-MM-DD` a deadline. |
+| `wj pending` | List the backlog in manual (pinned) order. |
+| `wj due <P#> <date\|->` | Set, or clear (`-`), a pending task's deadline. |
+| `wj raise <P#>` / `wj lower <P#>` | Move a pending task one step up / down. |
+| `wj drop <P#>` | Remove a pending task without starting it. |
+| `wj start <P#>` | Promote: start the task now (carrying its desc + project) and remove it from the backlog. |
 
 **Shell completion:** add `eval "$(wj completion bash)"` to your `~/.bashrc` (or
 `wj completion zsh` to `~/.zshrc`) to complete commands, flags, task ids and
@@ -233,8 +251,10 @@ display, independent of how totals are summed.
 
 Environment overrides:
 
-- `WJ_CONFIG` — path to the config file.
-- `WJ_DATA_DIR` — root of the data tree (defaults to `~/.local/share/wj`).
+- `WJ_CONFIG` — path to the config file (default `$XDG_CONFIG_HOME/wj/config`).
+- `WJ_DATA_DIR` — root of the data tree (default `$XDG_DATA_HOME/wj`, i.e. `~/.local/share/wj`).
+
+`XDG_CONFIG_HOME` / `XDG_DATA_HOME` are honored as the base for those defaults.
 
 ## Data layout
 
@@ -253,23 +273,42 @@ Project detection order: git remote basename → repo folder name → `default_p
 the CLI's `--json` output and triggers actions by calling `wj` — so the bash CLI
 stays the single source of truth, and the UI can never disagree with it.
 
-The layout fills the terminal width, panels scroll when content is tall, a
-header shows the currently-running task with a live-ticking clock, and `?` opens
-a full keybinding overlay. Three stacked panels, navigated with `Tab`:
+The layout fills the whole terminal: a narrow **sidebar** of lists drives a wide
+**main** column of detail. The header shows the running task with a live clock
+plus a today rollup (`>1 =0 x4 · Σ2h39m`); `?` opens a full keybinding overlay.
+Navigation is vim-style — `j`/`k` move within the focused panel, `l`/`h` drill
+in/out, `←`/`→` step days, `g`/`G` jump to first/last, `Ctrl-d`/`Ctrl-u`
+half-page — and `Tab` cycles every panel.
+
+Sidebar:
+
+- **Projects** — every project (or task) in range with its total. Selecting one
+  filters the day's Tasks to it (master→detail); the project running right now
+  is flagged `>`. `[`/`]` shift the window, `t` jumps to today, `1`/`7`/`3` set
+  the span (1/7/30 days), `b` toggles project/task rows.
+- **Tasks** — the focused day's tasks, each led by a status glyph: `>` running,
+  `=` paused, `»` deferred, `x` done.
+- **Pending** — the [backlog](#pending-backlog): `a` add (`desc @project
+  !YYYY-MM-DD`), `d` set/clear the due date, `[`/`]` reorder, `x` drop, `Enter`
+  to start (promote). Deadlines are colored by urgency (overdue red, due-soon amber).
+
+Main:
 
 - **Range** — a multi-day Gantt: one row per project (or task), one column per
-  day, with project-colored intensity bars. `←/→` pick a day, `[`/`]` shift the
-  window, `t` jumps to today, `1`/`7`/`3` set the span (1/7/30 days), `b`
-  toggles project/task rows.
+  day, with project-colored intensity bars.
 - **Day** — the focused day's intraday Gantt: a time axis from `shift_start` to
   `shift_end` with a `now ▲` marker and colored segment bars per task.
 - **Timeline** — the selected task's full event history.
 
-Mutations run the same commands as the CLI, on the selected task: `s` start,
-`p` pause, `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥`
-project autocomplete), `l` log a note, `x` cancel (with a confirm). Acting on a
-**past** day first prompts for a time (`--at`), so
-an edit can't collapse to a zero-length interval. Colors are assigned per project
+`/` opens a global **search** overlay: type to filter every task ever recorded
+(by id, project, or description); `Enter` jumps to a match, windowing the range
+onto its day and selecting it.
+
+Mutations run the same commands as the CLI, on the selected task: `p` pause,
+`r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥` project
+autocomplete), `n` log a note, `x` cancel (with a confirm); `s` starts a
+brand-new task. Acting on a **past** day first prompts for a time (`--at`), so an
+edit can't collapse to a zero-length interval. Colors are assigned per project
 (stable across days, including `--by task` rows) and respect `NO_COLOR`.
 
 ```sh
