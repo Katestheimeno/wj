@@ -454,9 +454,9 @@ func TestRangeSpanPresets(t *testing.T) {
 func TestLogKeyOpensPrompt(t *testing.T) {
 	m := drilled()
 	m.today = m.currentDay()
-	n, _ := mustModel(m.handleKey(keyMsg("l")))
+	n, _ := mustModel(m.handleKey(keyMsg("n")))
 	if !n.input.active || n.input.action != "log" {
-		t.Fatalf("'l' should open a log prompt, got %+v", n.input)
+		t.Fatalf("'n' should open a log (note) prompt, got %+v", n.input)
 	}
 }
 

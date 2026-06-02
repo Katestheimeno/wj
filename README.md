@@ -43,6 +43,10 @@ Total tracked: 1h15m
   can run at the same time (each is its own grid column).
 - **Time grid** — a configurable slot grid (default 5-minute "jumps", 09:00–19:00)
   visualises the shape of your day.
+- **Multi-day overview** — `wj gantt` prints a projects(or tasks)×days matrix of
+  time totals right in the terminal (the CLI counterpart of the TUI's Range view).
+- **Machine-readable** — `status`, `show`, `grid` and `gantt` accept `--json` for a
+  stable contract that tooling (and the `wj-tui` front-end) can consume.
 - **Git-aware** — on `complete`, commits made during a task's window are recorded
   automatically (no LLM, no prose).
 - **Retroactive** — `--at HH:MM` backfills past times; chain it to reconstruct a
@@ -144,6 +148,7 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `wj show <id>` | Full timeline of one task: start, notes, pauses/resumes, renames, moves, recorded commits, total time and status. Today by default; `--date` for a past day. |
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
 | `wj grid [date]` | Slot-by-slot schedule for a day. |
+| `wj gantt [flags]` | Multi-day overview: a rows×days matrix of time totals. Rows are projects (or per-day tasks with `--by task`); columns are days. Default range: the last 7 days through `--to` (or today). Cancelled and zero-time rows are omitted. The CLI counterpart of the TUI's Range view. |
 | `wj report [flags]` | Aggregate time over a date range, grouped by `--by`. |
 | `wj export [flags]` | Dump raw events as csv/json/tsv over a date range. |
 | `wj completion <shell>` | Print a shell-completion script (`bash` or `zsh`). |
@@ -158,10 +163,11 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `--at TIME` | start, pause, resume, complete, defer, log, amend, move, cancel, status, grid, show | Act at a past time instead of now. Flexible format — `9`, `930`, `0930`, `9:30`, `9.30`, `9am`, `9pm`, `9:30pm` all normalise to `HH:MM`. Backfills the grid. |
 | `--date YYYY-MM-DD` | any write command + status, grid, ls, show | Act on another day, not today (alias `--on`). Combine with `--at` to reconstruct any past day. On a past day **without** `--at`, the time is inferred from that day's last event (or `shift_start`) and the inference is printed. |
 | `--project NAME` | start (where the task lives); pause/complete/defer/log/resume/amend/cancel (scope) | Override project detection. Quote names with spaces. |
-| `--from D --to D` | report, export | Inclusive date range `YYYY-MM-DD`. Default: today. |
-| `--by KEY` | report | Group by `project` \| `task` \| `day`. Default: `project`. |
+| `--from D --to D` | report, export, gantt | Inclusive date range `YYYY-MM-DD`. For `gantt`, `--to` (or `--date`/`--on`) is the range end and `--from` the start; if `--from` is omitted it defaults to 6 days before `--to` (last 7 days). For `report`/`export`, default is today. |
+| `--by KEY` | report, gantt | Group rows. `report`: `project` \| `task` \| `day`. `gantt`: `project` \| `task`. Default: `project`. |
 | `--format FMT` | export | `csv` \| `json` \| `tsv`. Default: `csv`. |
 | `--days N` | ls | How many days back to scan for open tasks. Default: `1` (today). |
+| `--json` | status, show, grid, gantt | Emit machine-readable JSON instead of the text table — a stable contract (this is what the `wj-tui` front-end consumes). |
 
 If you omit `--project` on `pause`/`complete`/`log`/`amend`/`move`/`cancel`, the
 command acts on whatever is currently running. Pass `--project` to scope it to one
@@ -279,6 +285,12 @@ clear error — the CLI never depends on it.
 ## Analysis & export
 
 ```sh
+# Multi-day shape of the last week, by project (text matrix):
+wj gantt
+
+# A specific window, one row per task, as JSON for tooling:
+wj gantt --from 2026-06-01 --to 2026-06-07 --by task --json
+
 # Where did June go, by project?
 wj report --from 2026-06-01 --to 2026-06-30 --by project
 
