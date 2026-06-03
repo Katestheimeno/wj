@@ -319,7 +319,9 @@ onto its day and selecting it.
 Mutations run the same commands as the CLI, on the selected task: `p` pause,
 `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥` project
 autocomplete), `n` log a note, `x` cancel (with a confirm); `s` starts a
-brand-new task. Acting on a **past** day first prompts for a time (`--at`), so an
+brand-new task — type a description with an optional inline `@project` (`⇥`
+completes a known project, or just type a new name; omit it to auto-detect).
+Acting on a **past** day first prompts for a time (`--at`), so an
 edit can't collapse to a zero-length interval. Colors are assigned per project
 (stable across days, including `--by task` rows) and respect `NO_COLOR`.
 

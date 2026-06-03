@@ -498,8 +498,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pane = (m.pane + paneCount - 1) % paneCount
 		return m, nil
 	case "s":
-		// start a new task — global, prompts for a description
-		m.input = inputMode{active: true, action: "start", prompt: "start (description)"}
+		// start a new task — global. Description plus an optional inline
+		// "@project" (⇥ cycles known projects, like the add/move prompts).
+		m.input = inputMode{active: true, action: "start",
+			prompt: "start: desc  (optional @project; ⇥ completes)"}
 		return m, nil
 	}
 
@@ -713,10 +715,15 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.mutate(append(in.pending, "--at", val)...)
 		case "start":
-			if val == "" {
+			desc, proj := parseStartInput(val)
+			if desc == "" {
 				return m, nil
 			}
-			return m.issueMutation("start", []string{val})
+			args := []string{desc}
+			if proj != "" {
+				args = append(args, "--project", proj)
+			}
+			return m.issueMutation("start", args)
 		case "amend":
 			if val == "" {
 				return m, nil
@@ -754,12 +761,22 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyTab:
-		// project autocomplete in the move prompt: cycle matches of the prefix
-		if m.input.action == "move" {
+		switch m.input.action {
+		case "move":
+			// the whole value is the project name
 			if m.input.acPrefix == "" {
 				m.input.acPrefix = m.input.value
 			}
 			m.input.value = m.cycleProject(m.input.acPrefix, m.input.value)
+		case "start":
+			// only the trailing "@token" is a project; the rest is the desc
+			if at := strings.LastIndexByte(m.input.value, '@'); at >= 0 {
+				head, proj := m.input.value[:at+1], m.input.value[at+1:]
+				if m.input.acPrefix == "" {
+					m.input.acPrefix = proj
+				}
+				m.input.value = head + m.cycleProject(m.input.acPrefix, proj)
+			}
 		}
 		return m, nil
 	case tea.KeyEsc, tea.KeyCtrlC:
@@ -1306,6 +1323,22 @@ func parsePendingInput(s string) (desc, project, due string) {
 	return strings.Join(words, " "), project, due
 }
 
+// parseStartInput splits the start-prompt text into a description plus an
+// optional inline "@project" (the last @token wins). Unlike parsePendingInput
+// it has no "!due" notion, so a "!"-word stays part of the description.
+// e.g. "Fix login bug @backend" → ("Fix login bug", "backend").
+func parseStartInput(s string) (desc, project string) {
+	var words []string
+	for _, f := range strings.Fields(s) {
+		if len(f) > 1 && f[0] == '@' {
+			project = f[1:]
+		} else {
+			words = append(words, f)
+		}
+	}
+	return strings.Join(words, " "), project
+}
+
 // dueBadge maps a deadline to an urgency glyph, color, and compact label.
 // Overdue → red "!", due today/≤2d → amber "!", further out → dim.
 func (m Model) dueBadge(due string) (string, lipgloss.Color, string) {
@@ -1506,7 +1539,7 @@ func (m Model) helpOverlay() string {
 		{"Enter", "start (promote) the selected pending task"},
 		{"[ / ]", "move it up / down · x drop it"},
 		{"~Actions (on the selected task)", ""},
-		{"s", "start a new task"},
+		{"s", "start a new task (desc, optional @project; ⇥ completes)"},
 		{"p / r / c / d", "pause / resume / complete / defer"},
 		{"a / m", "amend description / move (⇥ completes project)"},
 		{"n", "add a note (log) to the running task"},

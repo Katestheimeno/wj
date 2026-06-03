@@ -750,6 +750,23 @@ func TestParsePendingInput(t *testing.T) {
 	}
 }
 
+func TestParseStartInput(t *testing.T) {
+	cases := []struct{ in, d, p string }{
+		{"Refactor auth", "Refactor auth", ""},
+		{"Refactor auth @backend", "Refactor auth", "backend"},
+		{"@backend Refactor auth", "Refactor auth", "backend"},
+		{"Fix the bug! now", "Fix the bug! now", ""},  // a trailing-! word stays in the desc
+		{"Ship v2 @a @backend", "Ship v2", "backend"}, // last @token wins
+		{"   spaced   out  ", "spaced out", ""},
+	}
+	for _, c := range cases {
+		d, p := parseStartInput(c.in)
+		if d != c.d || p != c.p {
+			t.Errorf("parseStartInput(%q) = (%q,%q), want (%q,%q)", c.in, d, p, c.d, c.p)
+		}
+	}
+}
+
 func TestLayoutNeverOverflowsShortTerminal(t *testing.T) {
 	m := drilled()
 	for i := 0; i < 30; i++ {
