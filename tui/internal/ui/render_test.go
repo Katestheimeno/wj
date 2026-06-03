@@ -381,6 +381,51 @@ func TestPastDayMutationPromptsForTime(t *testing.T) {
 	}
 }
 
+func TestTimedMutationPromptsEvenOnToday(t *testing.T) {
+	m := drilled()
+	m.today = m.currentDay() // focused day is "today" — a plain 'p' would run now
+	// Shift+P asks for an explicit time instead of acting immediately.
+	next, cmd := mustModel(m.handleKey(keyMsg("P")))
+	if !next.input.active || next.input.action != "at" {
+		t.Fatalf("Shift+P should open a time prompt, got %+v", next.input)
+	}
+	if cmd != nil {
+		t.Error("must not mutate before a time is given")
+	}
+	if got := strings.Join(next.input.pending, " "); got != "pause T1 --date "+m.currentDay() {
+		t.Errorf("pending argv = %q", got)
+	}
+	// a blank submit cancels (no mutation)
+	done, cmd2 := mustModel(next.handleKey(tea.KeyMsg{Type: tea.KeyEnter}))
+	if done.input.active {
+		t.Error("enter should close the prompt")
+	}
+	if cmd2 != nil {
+		t.Error("a blank time should cancel, not mutate")
+	}
+}
+
+func TestTimedCancelConfirmsThenPromptsForTime(t *testing.T) {
+	m := drilled()
+	m.today = m.currentDay()
+	// Shift+X opens the destructive-confirm guard, flagged to ask for a time next.
+	next, _ := mustModel(m.handleKey(keyMsg("X")))
+	if !next.confirm.active || next.confirm.verb != "cancel" || !next.confirm.atTime {
+		t.Fatalf("Shift+X should arm a timed cancel confirm, got %+v", next.confirm)
+	}
+	// confirming does NOT run yet — it opens the time prompt
+	armed, cmd := mustModel(next.handleKey(keyMsg("y")))
+	if cmd != nil {
+		t.Error("confirming a timed cancel must not mutate before a time is given")
+	}
+	if !armed.input.active || armed.input.action != "at" {
+		t.Fatalf("confirming should open the time prompt, got %+v", armed.input)
+	}
+	if got := strings.Join(armed.input.pending, " "); got != "cancel T1 --date "+m.currentDay() {
+		t.Errorf("pending argv = %q", got)
+	}
+}
+
 func TestMutationErrorStaysVisible(t *testing.T) {
 	m := drilled()
 	// a failed mutation records the error

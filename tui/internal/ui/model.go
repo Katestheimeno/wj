@@ -94,7 +94,7 @@ type mutationMsg struct {
 //     fully-built argv in `pending`, to which "--at <value>" is appended.
 type inputMode struct {
 	active   bool
-	action   string // "start" | "amend" | "move" | "log" | "at"
+	action   string // "start" | "amend" | "move" | "log" | "at" (at = run pending argv with --at <value>)
 	prompt   string
 	value    string
 	taskID   string   // target task for amend/move
@@ -119,6 +119,7 @@ type confirmMode struct {
 	verb      string   // wj verb to run on confirmation
 	valueArgs []string // args between the verb and --date (e.g. the task id)
 	raw       bool     // run as a plain mutate (no --date), e.g. for backlog drop
+	atTime    bool     // after confirming, prompt for an explicit --at time
 }
 
 // Model is the root Bubble Tea model.
@@ -659,6 +660,23 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	case "d":
 		next, cmd := m.issueMutation("defer", []string{id})
 		return next, cmd, true
+	// Shift+key = same action at an explicit --at time (a time prompt, then run).
+	case "P":
+		next, cmd := m.promptTimedMutation("pause", []string{id})
+		return next, cmd, true
+	case "R":
+		next, cmd := m.promptTimedMutation("resume", []string{id})
+		return next, cmd, true
+	case "C":
+		next, cmd := m.promptTimedMutation("complete", []string{id})
+		return next, cmd, true
+	case "D":
+		next, cmd := m.promptTimedMutation("defer", []string{id})
+		return next, cmd, true
+	case "X": // timed void: confirm first (it's destructive), then prompt for time
+		m.confirm = confirmMode{active: true, prompt: "cancel (void) " + id + " at a time?",
+			verb: "cancel", valueArgs: []string{id}, atTime: true}
+		return m, nil, true
 	case "a":
 		m.input = inputMode{active: true, action: "amend",
 			prompt: "amend " + id + " (new description)", taskID: id}
@@ -691,6 +709,18 @@ func (m Model) issueMutation(verb string, valueArgs []string) (tea.Model, tea.Cm
 	}
 	m.input = inputMode{active: true, action: "at", pending: args,
 		prompt: verb + " on " + day + " — time (e.g. 14:30)"}
+	return m, nil
+}
+
+// promptTimedMutation opens the time prompt for a Shift-key action so the user
+// can run verb at an explicit --at time instead of "now". It reuses the "at"
+// input handler (which appends --at <value> and runs). Works on any day, since
+// baseArgs carries the --date; a blank time cancels.
+func (m Model) promptTimedMutation(verb string, valueArgs []string) (tea.Model, tea.Cmd) {
+	day := m.currentDay()
+	label := strings.TrimSpace(verb + " " + strings.Join(valueArgs, " "))
+	m.input = inputMode{active: true, action: "at", pending: baseArgs(verb, valueArgs, day),
+		prompt: label + " — time (e.g. 14:30)"}
 	return m, nil
 }
 
@@ -912,6 +942,9 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		if c.raw { // backlog ops aren't dated task mutations — run them plainly
 			return m, m.mutate(append([]string{c.verb}, c.valueArgs...)...)
+		}
+		if c.atTime { // Shift+X: confirmed, now ask for the explicit --at time
+			return m.promptTimedMutation(c.verb, c.valueArgs)
 		}
 		return m.issueMutation(c.verb, c.valueArgs)
 	case "n", "N", "esc", "q":
@@ -1484,7 +1517,7 @@ func (m Model) footerLine() string {
 	case paneRange:
 		return "j/k project · l drill · ←→ day · [ ] window · 1/7/3 span · b by · / search · s start · ? help · q quit"
 	case paneDay:
-		return "j/k task · l timeline · h back · p/r/c/d pause/resume/done/defer · a/m/n amend/move/note · / search · ? help"
+		return "j/k task · l timeline · h back · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · / search · ? help"
 	case panePending:
 		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h back · ? help"
 	default:
@@ -1558,11 +1591,12 @@ func (m Model) helpOverlay() string {
 		{"Enter", "start (promote) the selected pending task"},
 		{"[ / ]", "move it up / down · x drop it"},
 		{"~Actions (on the selected task)", ""},
-		{"s", "start a new task (desc, optional @project; ⇥ completes)"},
-		{"p / r / c / d", "pause / resume / complete / defer"},
+		{"s", "start a new task: 'desc @project %time' (both optional; ⇥ completes)"},
+		{"p / r / c / d", "pause / resume / complete / defer (now)"},
+		{"P / R / C / D", "same, but prompt for an explicit time (--at)"},
 		{"a / m", "amend description / move (⇥ completes project)"},
 		{"n", "add a note (log) to the running task"},
-		{"x", "cancel (void) — asks to confirm"},
+		{"x / X", "cancel (void) — asks to confirm · X also prompts for a time"},
 		{"", "on a past day, actions prompt for a time first"},
 		{"~General", ""},
 		{"?", "toggle this help"},

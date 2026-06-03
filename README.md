@@ -320,10 +320,16 @@ Mutations run the same commands as the CLI, on the selected task: `p` pause,
 `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥` project
 autocomplete), `n` log a note, `x` cancel (with a confirm); `s` starts a
 brand-new task — type a description with an optional inline `@project` (`⇥`
-completes a known project, or just type a new name; omit it to auto-detect).
-Acting on a **past** day first prompts for a time (`--at`), so an
-edit can't collapse to a zero-length interval. Colors are assigned per project
-(stable across days, including `--by task` rows) and respect `NO_COLOR`.
+completes a known project, or just type a new name; omit it to auto-detect) and
+an optional inline `%time` (e.g. `%9:30`) to backdate the start — omit it for now.
+
+To do any of `pause`/`resume`/`complete`/`defer`/`cancel` **at an explicit time**
+rather than now, use the **Shift** variant — `P`/`R`/`C`/`D`/`X` — which opens a
+one-line time prompt and runs the command with `--at` (a blank entry cancels;
+`X` confirms the void first, then asks for the time). Acting on a **past** day
+also prompts for a time, so an edit can't collapse to a zero-length interval.
+Colors are assigned per project (stable across days, including `--by task` rows)
+and respect `NO_COLOR`.
 
 Every action echoes the CLI's confirmation in the footer — a cyan `✓` line such
 as `✓ T1 12:30 completed — 1h30m`, or, for an [idempotent](#commands) no-op,
