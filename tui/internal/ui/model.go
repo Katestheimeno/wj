@@ -433,8 +433,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = ""
 			// echo the CLI's confirmation line (incl. idempotent no-ops like
-			// "T1  already completed") so a re-click still gives feedback
-			m.notice = msg.note
+			// "T1  already completed") so a re-click still gives feedback.
+			// Collapse whitespace so a multi-line reply (e.g. complete's
+			// "… completed\n  N commit(s) recorded") stays a single footer line.
+			m.notice = strings.Join(strings.Fields(msg.note), " ")
 		}
 		// reload regardless: even on a CLI error the log may have changed
 		return m, m.reloadAll()

@@ -97,6 +97,29 @@ func TestProjectColorStable(t *testing.T) {
 	}
 }
 
+// distinct projects (up to the palette size) must never share a color — a plain
+// hash%N collides well before that, which is the duplication this guards against.
+func TestProjectColorNoDuplicateWithinPalette(t *testing.T) {
+	resetColorReg()
+	names := []string{"meetings", "backend", "frontend", "design", "infra", "docs", "research"}
+	first := map[string]lipgloss.Color{}
+	seen := map[lipgloss.Color]string{}
+	for _, n := range names {
+		c := ProjectColor(n)
+		if other, dup := seen[c]; dup {
+			t.Errorf("%q and %q share color %v", other, n, c)
+		}
+		seen[c] = n
+		first[n] = c
+	}
+	// the assignment is stable on a second pass (memoised for the session)
+	for _, n := range names {
+		if got := ProjectColor(n); got != first[n] {
+			t.Errorf("%q color changed: %v -> %v", n, first[n], got)
+		}
+	}
+}
+
 func TestHM(t *testing.T) {
 	cases := map[string]int{"09:00": 540, "00:00": 0, "23:59": 1439, "bad": 0, "": 0}
 	for in, want := range cases {
@@ -377,6 +400,34 @@ func TestMutationErrorStaysVisible(t *testing.T) {
 	}
 }
 
+func TestMutationNoticeShownAndCollapsed(t *testing.T) {
+	m := drilled()
+	// a successful mutation echoes the CLI's confirmation as a notice. A
+	// multi-line reply (complete + commits) must collapse to a single line so
+	// it can't break the fixed-height footer.
+	m, _ = mustModel(m.Update(mutationMsg{note: "T1  10:00  completed — 1h00m\n      3 commit(s) recorded"}))
+	if m.notice == "" {
+		t.Fatal("successful mutation should set m.notice")
+	}
+	if strings.Contains(m.notice, "\n") {
+		t.Errorf("notice must be a single line, got %q", m.notice)
+	}
+	if m.err != "" {
+		t.Error("a successful mutation must not set m.err")
+	}
+	// the idempotent no-op message is surfaced (whitespace collapsed to single
+	// spaces, which is all a one-line footer needs)
+	m, _ = mustModel(m.Update(mutationMsg{note: "T1  already completed"}))
+	if m.notice != "T1 already completed" {
+		t.Errorf("no-op notice = %q, want %q", m.notice, "T1 already completed")
+	}
+	// the next keypress dismisses it
+	m, _ = mustModel(m.handleKey(keyMsg("j")))
+	if m.notice != "" {
+		t.Error("a keypress should dismiss the notice")
+	}
+}
+
 func TestMutationKeyGatedToDetailPane(t *testing.T) {
 	// in the range pane, 'c' is not a mutation (no selected task context there)
 	m := sampleModel() // paneRange
@@ -611,9 +662,9 @@ func pendingModel() Model {
 	m.today = "2026-06-02"
 	m.pane = panePending
 	m.pending = []wj.Pending{
-		{ID: "P1", Project: "Acme", Due: "2026-06-01", Desc: "Fix invoice"},   // overdue
-		{ID: "P2", Due: "2026-06-02", Desc: "Call client"},                    // today
-		{ID: "P3", Project: "Ideas", Desc: "Write blog"},                      // no due
+		{ID: "P1", Project: "Acme", Due: "2026-06-01", Desc: "Fix invoice"}, // overdue
+		{ID: "P2", Due: "2026-06-02", Desc: "Call client"},                  // today
+		{ID: "P3", Project: "Ideas", Desc: "Write blog"},                    // no due
 	}
 	return m
 }
@@ -671,9 +722,9 @@ func TestDueBadge(t *testing.T) {
 		due, wantGlyph, wantLabel string
 	}{
 		{"", " ", "—"},
-		{"2026-06-01", "!", "-1d"},  // overdue
+		{"2026-06-01", "!", "-1d"}, // overdue
 		{"2026-06-02", "!", "today"},
-		{"2026-06-03", "!", "1d"},   // due soon
+		{"2026-06-03", "!", "1d"},    // due soon
 		{"2026-06-20", " ", "06-20"}, // far out -> plain date
 	}
 	for _, c := range cases {

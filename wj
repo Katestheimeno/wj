@@ -1335,6 +1335,11 @@ CONCURRENCY
   Only one task per project runs at a time (starting/resuming auto-pauses the
   previous one). Different projects CAN run at once — each is its own grid column.
 
+IDEMPOTENT STATE CHANGES
+  Repeating an action whose state the task already holds does nothing: pause on
+  a paused task (likewise resume on a running one, complete on a completed one,
+  defer and cancel) appends no event and just prints e.g. "T1  already paused".
+
 CONFIG  (~/.config/wj/config — created on first run)
   shift_start / shift_end   working-day bounds for the grid          (09:00 / 19:00)
   slot_minutes              grid time-step, i.e. the "jump"           (5)

@@ -9,6 +9,8 @@ project colors and an intraday drill-down — see [Terminal UI](#terminal-ui-opt
 The bash CLI is fully self-contained; the UI is a thin front-end over it and is
 never required.
 
+![wj-tui — the optional terminal UI: a multi-day Gantt, an intraday drill-down, a pending backlog and a per-task timeline, all driven by the CLI](assets/asset1.png)
+
 The source of truth is an **append-only, per-day TSV event log**. Every other
 view — status tables, the schedule grid, reports, exports — is *derived* by
 replaying that log. Your data stays plain text: greppable, diffable, and trivial
@@ -152,6 +154,7 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `wj search <query>` | Find tasks across **all** recorded days by a case-insensitive substring of the id, project, or description. Most-recent first; `--json` for the UI's `/` overlay. |
 | `wj report [flags]` | Aggregate time over a date range, grouped by `--by`. |
 | `wj export [flags]` | Dump raw events as csv/json/tsv over a date range. |
+| `wj ui` | Launch the optional `wj-tui` front-end (see [Terminal UI](#terminal-ui-optional)). A bare `wj` opens it too when `interface=ui`. |
 | `wj completion <shell>` | Print a shell-completion script (`bash` or `zsh`). |
 | `wj config` | Print the active config file path. |
 | `wj version` | Print the version (also `--version`, `-V`). |
@@ -174,6 +177,11 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 If you omit `--project` on `pause`/`complete`/`log`/`amend`/`move`/`cancel`, the
 command acts on whatever is currently running. Pass `--project` to scope it to one
 project, or a task id (`T2`) to target a specific task in any state.
+
+The state changes are **idempotent**: repeating an action whose state the task
+already holds is a no-op. `pause` on an already-paused task (or `resume` on a
+running one, `complete` on a completed one, `defer`/`cancel` likewise) writes
+nothing to the log and just prints, e.g., `T1  already paused`.
 
 ### Pending backlog
 
@@ -280,6 +288,8 @@ Navigation is vim-style — `j`/`k` move within the focused panel, `l`/`h` drill
 in/out, `←`/`→` step days, `g`/`G` jump to first/last, `Ctrl-d`/`Ctrl-u`
 half-page — and `Tab` cycles every panel.
 
+![The `?` overlay — the full keybinding reference, grouped by panel](assets/asset_help.png)
+
 Sidebar:
 
 - **Projects** — every project (or task) in range with its total. Selecting one
@@ -304,12 +314,19 @@ Main:
 (by id, project, or description); `Enter` jumps to a match, windowing the range
 onto its day and selecting it.
 
+![The `/` search overlay — fuzzy-filter every task ever recorded, across all days](assets/asset_search.png)
+
 Mutations run the same commands as the CLI, on the selected task: `p` pause,
 `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥` project
 autocomplete), `n` log a note, `x` cancel (with a confirm); `s` starts a
 brand-new task. Acting on a **past** day first prompts for a time (`--at`), so an
 edit can't collapse to a zero-length interval. Colors are assigned per project
 (stable across days, including `--by task` rows) and respect `NO_COLOR`.
+
+Every action echoes the CLI's confirmation in the footer — a cyan `✓` line such
+as `✓ T1 12:30 completed — 1h30m`, or, for an [idempotent](#commands) no-op,
+`✓ T1 already paused`; failures show in a red `⚠` line instead. The next keypress
+dismisses it.
 
 ```sh
 make install-ui            # build & install wj-tui (needs Go)
@@ -320,6 +337,27 @@ wj ui                      # launch it explicitly
 Install it via `--with-ui` (see [Install](#install)). If `wj-tui` isn't present,
 `interface=ui` silently falls back to the status table, and `wj ui` prints a
 clear error — the CLI never depends on it.
+
+### Try it with demo data
+
+To explore the UI (or the CLI) without touching your own log, the repo ships a
+seed script that reconstructs a sample work-week — five recent days across a
+handful of projects, with pauses, a deferral, a re-homed task, two tasks left
+running *today* (so the header clock ticks), and a pending backlog — into a
+throwaway data dir:
+
+```sh
+make tui                       # build ./tui/wj-tui (needs Go)
+./tui/demo/seed-demo.sh        # populate /tmp/wj-demo via the real CLI
+
+# launch the UI against the demo data — your real log stays untouched:
+WJ_DATA_DIR=/tmp/wj-demo WJ_CONFIG=/tmp/wj-demo/config ./tui/wj-tui
+```
+
+The dates are anchored to today, so it's always "this past week". The same two
+env vars point the plain CLI at the demo too — e.g.
+`WJ_DATA_DIR=/tmp/wj-demo WJ_CONFIG=/tmp/wj-demo/config wj gantt`. Re-run the
+script anytime to reset it; `rm -rf /tmp/wj-demo` removes it.
 
 ## Analysis & export
 

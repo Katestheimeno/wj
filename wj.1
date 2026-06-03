@@ -54,6 +54,17 @@ Re-home a task to another project (fix wrong auto-detection).
 .BI "cancel " [id]
 Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw
 log for audit).
+.PP
+The state changes are idempotent: repeating one whose target state the task
+already holds \(em
+.B pause
+on a paused task,
+.B resume
+on a running one,
+.B complete
+on a completed one, and so on \(em appends nothing to the log and just prints,
+e.g.,
+.IR "T1  already paused" .
 .SH VIEW & ANALYSIS
 .TP
 .B ls
