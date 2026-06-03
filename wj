@@ -23,11 +23,11 @@ WJ_VERSION="0.1.0"
 shift_start=09:00
 shift_end=19:00
 slot_minutes=5          # the configurable "jump"
-round=down              # down | nearest   (grid snapping only)
-totals=exact            # exact | slot     (how time totals are summed)
-default_project=admin   # used outside a git repo when no --project given
-git_tag=on              # on | off — attach commits in a task's window on complete
-interface=minimal       # minimal | ui — bare `wj` / `wj ui` launch the wj-tui front-end
+round="down"            # down | nearest   (grid snapping only)
+totals="exact"          # exact | slot     (how time totals are summed)
+default_project="admin" # used outside a git repo when no --project given
+git_tag="on"            # on | off — attach commits in a task's window on complete
+interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui front-end
 
 # ---------------------------------------------------------------------------
 # Paths
