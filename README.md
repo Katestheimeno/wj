@@ -98,6 +98,16 @@ To install the optional terminal UI as well (needs [Go](https://go.dev/dl)):
 curl -fsSL https://raw.githubusercontent.com/Katestheimeno/wj/main/install.sh | bash -s -- --with-ui
 ```
 
+### Arch Linux (AUR)
+
+On Arch and derivatives, install the [`wj`](https://aur.archlinux.org/packages/wj)
+package from the AUR. This bundles everything — the CLI, the `wj-tui` front-end,
+the man page, and bash completions — and keeps it updated through your AUR helper:
+
+```sh
+yay -S wj      # or: paru -S wj
+```
+
 ### Build from source (with `make`)
 
 Clone the repo and use the Makefile to install both the CLI and the UI (the man
