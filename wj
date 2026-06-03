@@ -6,7 +6,7 @@
 # Everything else — status, grid, reports, exports — is derived by replaying it.
 #
 #   Event row:  timestamp \t task_id \t project \t event \t note
-#   Events:     start | pause | resume | complete | defer | log | amend | move | cancel | commit
+#   Events:     start | pause | resume | complete | defer | log | amend | move | cancel
 #
 # Layout:
 #   ~/.config/wj/config                  settings   (override: $WJ_CONFIG)
@@ -15,7 +15,7 @@
 #
 set -uo pipefail
 
-WJ_VERSION="0.9.11"
+WJ_VERSION="0.9.12"
 
 # ---------------------------------------------------------------------------
 # Defaults (overridable in the config file)
@@ -26,10 +26,10 @@ slot_minutes=5          # the configurable "jump"
 round="down"            # down | nearest   (grid snapping only)
 totals="exact"          # exact | slot     (how time totals are summed)
 default_project="admin" # used outside a git repo when no --project given
-git_tag="on"            # on | off — attach commits in a task's window on complete
 interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui front-end
 auto_pause="off"        # on | off — on start/resume, auto-pause a running task in
                         # the SAME project. off = run them in parallel (default)
+accent="141"            # wj-tui main color: 256-color code, #hex, or ANSI name
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -72,9 +72,6 @@ totals=$totals
 # Project used outside a git repo when no --project is given
 default_project=$default_project
 
-# Record commits in a task's window on complete: on | off
-git_tag=$git_tag
-
 # Front-end for bare \`wj\` and \`wj ui\`: minimal | ui
 # minimal -> today's status table (the classic behaviour)
 # ui      -> launch the wj-tui binary if installed, else fall back to minimal
@@ -86,6 +83,10 @@ interface=$interface
 # off -> leave the other task running, so you work on several in parallel (default)
 # Override per command with --parallel / --auto-pause.
 auto_pause=$auto_pause
+
+# Main color for the wj-tui front-end (panel titles, focus, selection, prompts).
+# A 256-color code (e.g. 141), a hex value (#9d7cd8), or an ANSI name (purple).
+accent=$accent
 EOF
 }
 
@@ -156,7 +157,19 @@ fmt_dur() {
     if (( h > 0 )); then printf '%dh%02dm' "$h" "$m"; else printf '%dm' "$m"; fi
 }
 
-# detect project from git remote -> repo toplevel -> default, lowercased
+# canonicalise a project name so trivially-different spellings don't split into
+# separate projects: lowercase, drop stray tab/CR/newline, collapse internal
+# whitespace runs to a single space, and trim the ends. "Backend", "backend",
+# and "foo  bar" (two spaces) thus all land on one canonical name.
+normalize_project() {
+    local p=${1//[$'\t\r\n']/ }
+    while [[ $p == *"  "* ]]; do p=${p//  / }; done   # squeeze runs of spaces
+    p=${p#"${p%%[![:space:]]*}"}                      # ltrim
+    p=${p%"${p##*[![:space:]]}"}                      # rtrim
+    printf '%s' "${p,,}"
+}
+
+# detect project from git remote -> repo toplevel -> default, canonicalised
 detect_project() {
     local p
     p=$(git remote get-url origin 2>/dev/null | sed 's#.*[/:]##; s/\.git$//') || true
@@ -164,7 +177,7 @@ detect_project() {
         p=$(basename "$(git rev-parse --show-toplevel)")
     fi
     [[ -z $p ]] && p=$default_project
-    printf '%s' "$p" | tr '[:upper:]' '[:lower:]'
+    normalize_project "$p"
 }
 
 # day file path for a YYYY-MM-DD date
@@ -199,11 +212,77 @@ append_event() {
     file=$(day_file "${ts:0:10}")
     mkdir -p "$(dirname "$file")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$id" "$proj" "$evt" "$note" >>"$file"
+    _R_FILE="__stale__"   # invalidate the replay cache: the log just changed
+}
+
+# Serialize the read-derive-append sequence of mutating commands so two
+# concurrent `wj` invocations can't interleave — e.g. both reading max_task_id as
+# 2 and both minting T3, or two backlog edits racing on pending.tsv. The lock is
+# held on fd 9 for the life of the (short-lived) process and released on exit.
+#
+# Best-effort: uses flock(1) when present (Linux/util-linux, the primary target)
+# and is a silent no-op otherwise (e.g. macOS without flock), degrading to the
+# prior unlocked behaviour rather than failing.
+acquire_lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+    mkdir -p "$WJ_DATA_DIR" 2>/dev/null || return 0
+    # NB: the 2>/dev/null is scoped to the brace group, NOT placed directly on
+    # the `exec` — `exec 9>f 2>/dev/null` (no command) would make BOTH
+    # redirections permanent, silently sending all later stderr to /dev/null.
+    { exec 9>"$WJ_DATA_DIR/.lock"; } 2>/dev/null || return 0
+    flock 9 2>/dev/null || return 0
 }
 
 # ---------------------------------------------------------------------------
 # Per-day replay queries
 # ---------------------------------------------------------------------------
+#
+# replay_day does ONE pass over a day file and derives every per-task aggregate
+# the read views need, memoized by file path. The task_* helpers below read from
+# that cache, so rendering a day (status/grid/report/gantt/search) replays the
+# file once instead of once per helper per task. append_event() marks the cache
+# stale, and replay_day rebuilds on the next access of a different/changed file.
+#
+# Per-id arrays:  _R_DESC project _R_STATUS, _R_CANCEL (0|1),
+#   _R_CLOSED (summed minutes of completed intervals), _R_ACTIVE (0|1, open?),
+#   _R_OPEN (start-minute of the open interval). _R_IDS keeps first-seen order;
+#   _R_SEEN marks membership.
+_R_FILE="__none__"
+declare -A _R_DESC=() _R_PROJ=() _R_STATUS=() _R_CANCEL=() _R_CLOSED=() _R_OPEN=() _R_ACTIVE=() _R_SEEN=()
+declare -a _R_IDS=()
+replay_day() {
+    local file=$1
+    [[ $_R_FILE == "$file" ]] && return 0
+    _R_FILE=$file
+    _R_DESC=(); _R_PROJ=(); _R_STATUS=(); _R_CANCEL=(); _R_CLOSED=(); _R_OPEN=(); _R_ACTIVE=(); _R_SEEN=(); _R_IDS=()
+    [[ -f $file ]] || return 0
+    local ts id proj evt note hh mm m
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ -n $id ]] || continue
+        if [[ -z ${_R_SEEN[$id]:-} ]]; then
+            _R_SEEN[$id]=1; _R_IDS+=("$id")
+            _R_CLOSED[$id]=0; _R_ACTIVE[$id]=0; _R_CANCEL[$id]=0
+            _R_DESC[$id]=""; _R_PROJ[$id]=""; _R_STATUS[$id]=""
+        fi
+        hh=${ts:11:2}; mm=${ts:14:2}; m=$(( 10#$hh * 60 + 10#$mm ))
+        case $evt in
+            start)
+                _R_DESC[$id]=$note; _R_PROJ[$id]=$proj; _R_STATUS[$id]=in-progress
+                (( _R_ACTIVE[$id] )) || { _R_ACTIVE[$id]=1; _R_OPEN[$id]=$m; } ;;
+            resume)
+                _R_STATUS[$id]=in-progress
+                (( _R_ACTIVE[$id] )) || { _R_ACTIVE[$id]=1; _R_OPEN[$id]=$m; } ;;
+            amend) _R_DESC[$id]=$note ;;
+            move)  _R_PROJ[$id]=$proj ;;
+            pause|complete|defer)
+                case $evt in pause) _R_STATUS[$id]=paused;; complete) _R_STATUS[$id]=completed;; defer) _R_STATUS[$id]=deferred;; esac
+                (( _R_ACTIVE[$id] )) && { _R_CLOSED[$id]=$(( _R_CLOSED[$id] + m - _R_OPEN[$id] )); _R_ACTIVE[$id]=0; } ;;
+            cancel)
+                _R_STATUS[$id]=cancelled; _R_CANCEL[$id]=1; _R_ACTIVE[$id]=0 ;;
+        esac
+    done <"$file"
+    return 0
+}
 
 # highest existing T# in a day file (0 if none)
 max_task_id() {
@@ -217,56 +296,16 @@ max_task_id() {
 }
 
 # a task's description: its `start` note, overridden by the latest `amend`
-task_desc() {
-    local file=$1 want=$2 ts id proj evt note desc=""
-    while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" ]] || continue
-        case $evt in start|amend) desc=$note ;; esac
-    done <"$file"
-    printf '%s' "$desc"
-}
+task_desc() { replay_day "$1"; printf '%s' "${_R_DESC[$2]:-}"; }
 
 # a task's project: its `start` project, overridden by the latest `move`
-task_project() {
-    local file=$1 want=$2 ts id proj evt note cur=""
-    while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" ]] || continue
-        case $evt in start|move) cur=$proj ;; esac
-    done <"$file"
-    printf '%s' "$cur"
-}
+task_project() { replay_day "$1"; printf '%s' "${_R_PROJ[$2]:-}"; }
 
 # whether a task has been cancelled (voided)
-task_cancelled() {
-    local file=$1 want=$2 ts id proj evt note
-    while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" && $evt == cancel ]] && return 0
-    done <"$file"
-    return 1
-}
-
-task_start_time() {
-    local file=$1 want=$2 ts id proj evt note
-    while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" && $evt == start ]] && { printf '%s' "${ts:11:5}"; return; }
-    done <"$file"
-}
+task_cancelled() { replay_day "$1"; [[ ${_R_CANCEL[$2]:-0} == 1 ]]; }
 
 # current status of a task by last status-affecting event
-task_status() {
-    local file=$1 want=$2 ts id proj evt note st=""
-    while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" ]] || continue
-        case $evt in
-            start|resume) st=in-progress ;;
-            pause)        st=paused ;;
-            defer)        st=deferred ;;
-            complete)     st=completed ;;
-            cancel)       st=cancelled ;;
-        esac
-    done <"$file"
-    printf '%s' "$st"
-}
+task_status() { replay_day "$1"; printf '%s' "${_R_STATUS[$2]:-}"; }
 
 # true if task $2 in file $1 is already in status $3. Used to keep the
 # state-changing actions idempotent: repeating an action whose target state
@@ -283,23 +322,12 @@ task_ids() {
 
 # total active minutes for a task; arg3 = now-minute (cap for open intervals)
 task_minutes() {
-    local file=$1 want=$2 now_min=$3
-    local ts id proj evt note m active=0 open=0 total=0 slot=$slot_minutes cancelled=0
-    while IFS=$'\t' read -r ts id proj evt note; do
-        [[ $id == "$want" ]] || continue
-        m=$(hm_to_min "${ts:11:5}")
-        case $evt in
-            start|resume)
-                (( active )) || { active=1; open=$m; } ;;
-            pause|complete|defer)
-                if (( active )); then
-                    total=$(( total + m - open )); active=0
-                fi ;;
-            cancel) active=0; cancelled=1 ;;
-        esac
-    done <"$file"
-    (( cancelled )) && { printf '0'; return; }
-    (( active )) && total=$(( total + now_min - open ))
+    local file=$1 want=$2 now_min=$3 total slot=$slot_minutes
+    replay_day "$file"
+    [[ -n ${_R_SEEN[$want]:-} ]] || { printf '0'; return; }
+    (( ${_R_CANCEL[$want]} )) && { printf '0'; return; }
+    total=${_R_CLOSED[$want]}
+    (( ${_R_ACTIVE[$want]} )) && total=$(( total + now_min - _R_OPEN[$want] ))
     if [[ $totals == slot ]]; then
         total=$(( (total + slot - 1) / slot * slot ))
     fi
@@ -309,9 +337,8 @@ task_minutes() {
 
 # whether a task id appears in a day file
 task_exists() {
-    local file=$1 want=$2
-    [[ -f $file ]] || return 1
-    awk -F'\t' -v w="$want" '$2==w{f=1} END{exit f?0:1}' "$file"
+    replay_day "$1"
+    [[ -n ${_R_SEEN[$2]:-} ]]
 }
 
 # resolve a task by current state: mode=active (in-progress) | resumable (paused/deferred).
@@ -394,6 +421,9 @@ parse_args() {
         AT=$norm
     fi
     [[ -z $ON ]] || valid_date "$ON" || die "--date must be a real date YYYY-MM-DD (got '$ON')"
+    # canonicalise the project once so it matches the auto-detected form and is
+    # consistent everywhere it is used (as the task's project AND as a scope filter).
+    [[ -z $PROJECT_OVERRIDE ]] || PROJECT_OVERRIDE=$(normalize_project "$PROJECT_OVERRIDE")
 }
 
 TODAY=$(date +%Y-%m-%d)
@@ -531,7 +561,8 @@ cmd_move() {
     else id=$(find_task "$file" active "$proj"); newproj=${ARGS[*]:-}; fi
     [[ -n $id ]] || die "no task to move (give a task id)"
     [[ -n $newproj ]] || die "move needs a target project"
-    newproj=$(printf '%s' "$newproj" | tr '[:upper:]' '[:lower:]')
+    newproj=$(normalize_project "$newproj")
+    [[ -n $newproj ]] || die "move needs a target project"
     oldproj=$(task_project "$file" "$id")
     # new project in the project column; old kept in the note for audit
     append_event "$ts" "$id" "$newproj" move "$oldproj"
@@ -562,20 +593,6 @@ cmd_complete() {
     append_event "$ts" "$id" "$tproj" complete ""
     local mins; mins=$(task_minutes "$file" "$id" "$(now_min)")
     printf '%s  %s  completed — %s\n' "$id" "${ts:11:5}" "$(fmt_dur "$mins")"
-    # record commits in the task's window
-    if [[ $git_tag == on ]] && git rev-parse --git-dir >/dev/null 2>&1; then
-        local start; start=$(task_start_time "$file" "$id")
-        local since="${ts:0:10} ${start}" until="${ts:0:10} ${ts:11:5}"
-        local n=0 h s
-        while IFS=$'\t' read -r h s; do
-            [[ -z $h ]] && continue
-            append_event "$ts" "$id" "$tproj" commit "$h $s"; n=$(( n + 1 ))
-        done < <(git log --since="$since" --until="$until" --format='%h%x09%s' 2>/dev/null || true)
-        # NB: use an `if`, not `(( n>0 )) && printf` — as the function's last
-        # statement the latter returns 1 when n==0, making a successful
-        # `complete` exit non-zero (common: a task with no commits in its window).
-        if (( n > 0 )); then printf '      %d commit(s) recorded\n' "$n"; fi
-    fi
 }
 
 # list open tasks (last event not complete/cancel).
@@ -656,7 +673,6 @@ cmd_show() {
             move)     label=moved;      extra="$note -> $xp" ;;
             cancel)   label=cancelled ;;
             complete) label=completed ;;
-            commit)   label=commit;     extra=$note ;;
             *)        continue ;;
         esac
         printf '  %s  %-9s  %s\n' "$t" "$label" "$extra"
@@ -1068,7 +1084,7 @@ pending_move() {
 
 cmd_add() {
     local desc proj
-    desc=$(sanitize "${ARGS[*]:-}"); proj=$(sanitize "$PROJECT_OVERRIDE")
+    desc=$(sanitize "${ARGS[*]:-}"); proj=$PROJECT_OVERRIDE   # already normalized in parse_args
     [[ -n $desc ]] || die "add needs a description (e.g. wj add \"Fix invoice\")"
     [[ -z $DUE ]] || valid_date "$DUE" || die "--due must be a real date YYYY-MM-DD (got '$DUE')"
     local f id created
@@ -1285,8 +1301,7 @@ TASK COMMANDS
   resume [id]         Resume the most-recent paused/deferred task (or given id).
                       Runs in parallel by default; --auto-pause pauses the
                       project's other running task first.
-  complete [id]       Finish a task: sum its time and, in a git repo, record the
-                      commits made during its window.
+  complete [id]       Finish a task and sum its tracked time.
   defer  [id] [why]   Set a task aside (e.g. blocked / picking it up another day).
   log <note>          Attach a timestamped note to the running task.
   amend [id] <desc>   Replace a task's description (running task, or given id).
@@ -1311,7 +1326,7 @@ VIEW & ANALYSIS
                       Today by default; --days N scans the last N days (adds a DATE
                       column) to catch timers you left running on an earlier day.
   show <id>           Full timeline of one task: start, notes, pauses/resumes,
-                      renames, moves, recorded commits, total time and status.
+                      renames, moves, total time and status.
                       Today by default; --date YYYY-MM-DD for a past day.
   status [date]       Per-task totals table for a day (default: today). Default cmd.
   grid   [date]       Slot-by-slot schedule for a day (see SYMBOLS below).
@@ -1379,9 +1394,9 @@ CONFIG  (~/.config/wj/config — created on first run)
   round                     grid snapping: down | nearest             (down)
   totals                    time summing: exact | slot               (exact)
   default_project           project used outside a git repo          (admin)
-  git_tag                   record commits on complete: on | off     (on)
   interface                 bare-wj front-end: minimal | ui          (minimal)
   auto_pause                start/resume auto-pause same project     (off)
+  accent                    wj-tui main color (256-code/#hex/name)   (141)
 
 EXAMPLES
   wj start "Refactor auth" --project backend   # start tracking
@@ -1396,7 +1411,7 @@ EXAMPLES
   wj resume                                     # back to the refactor (most-recent paused)
   wj start "Code review" --auto-pause           # pause the refactor first, one at a time
   wj start "Quick fix"                          # default: runs alongside the refactor
-  wj complete                                   # finish it; commits recorded
+  wj complete                                   # finish it; time summed
   wj ls                                         # what's open right now
   wj ls --days 7                                # anything left open this past week
   wj show T1                                     # full timeline of one task
@@ -1433,12 +1448,20 @@ main() {
     # no command, or a leading flag (e.g. `wj --json`), means "default view"
     if [[ $# -eq 0 || $1 == -* ]]; then cmd=__default; else cmd=$1; shift; fi
     parse_args "$@"
+    # mutating commands take a process-wide lock so concurrent invocations can't
+    # interleave their read-derive-append sequences (see acquire_lock).
+    case $cmd in
+        start|pause|resume|complete|defer|log|amend|move|cancel|add|drop|due|raise|lower)
+            acquire_lock ;;
+    esac
     case $cmd in
         __default)
             # bare `wj`: launch the UI front-end when configured & available,
             # otherwise fall back to today's status (the classic default).
             if [[ $interface == ui ]] && command -v wj-tui >/dev/null 2>&1; then
-                exec wj-tui -wj "$(self_path)"
+                local -a uiargs=(-wj "$(self_path)")
+                [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
+                exec wj-tui "${uiargs[@]}"
             fi
             cmd_status ;;
         ui)
@@ -1450,6 +1473,7 @@ main() {
             [[ -n $FROM ]] && uiargs+=(-from "$FROM")
             [[ -n $TO ]]   && uiargs+=(-to "$TO")
             [[ -n $BY ]]   && uiargs+=(-by "$BY")
+            [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
             exec wj-tui "${uiargs[@]}" ;;
         gantt)    cmd_gantt ;;
         start)    cmd_start ;;
@@ -1484,4 +1508,9 @@ main() {
     esac
 }
 
-main "$@"
+# Only auto-run when executed directly. When sourced (e.g. by the bats test
+# suite to unit-test the helper functions) this is skipped, so sourcing defines
+# the functions without dispatching a command.
+if [[ ${BASH_SOURCE[0]} == "${0}" ]]; then
+    main "$@"
+fi

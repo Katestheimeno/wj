@@ -7,7 +7,7 @@ on:
 
 jobs:
   bash:
-    name: Lint the bash CLI
+    name: Lint & test the bash CLI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,9 +18,22 @@ jobs:
         with:
           additional_files: install.sh
           scandir: '.'
+          # the bats test files are not plain bash (@test/load syntax); they are
+          # exercised by the bats step below, not shellcheck.
+          ignore_paths: tests
           # wj uses bashisms intentionally; check as bash
         env:
           SHELLCHECK_OPTS: -s bash -S warning
+      - name: Install bats
+        uses: bats-core/bats-action@3.0.0
+        with:
+          # only the core runner is needed; skip the optional support libraries
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run bats suite
+        run: bats tests/
 
   go:
     name: Build & test wj-tui
@@ -38,7 +51,14 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; echo 'run gofmt -w .'; exit 1; }
       - name: go vet
         run: go vet ./...
-      - name: go test
-        run: go test ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: tui
+      - name: go test (with coverage)
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
       - name: build
         run: go build -trimpath -ldflags="-s -w -X main.version=ci" -o /tmp/wj-tui .

@@ -51,15 +51,14 @@ Total tracked: 1h15m
   time totals right in the terminal (the CLI counterpart of the TUI's Range view).
 - **Machine-readable** — `status`, `show`, `grid` and `gantt` accept `--json` for a
   stable contract that tooling (and the `wj-tui` front-end) can consume.
-- **Git-aware** — on `complete`, commits made during a task's window are recorded
-  automatically (no LLM, no prose).
 - **Retroactive** — `--at HH:MM` backfills past times; chain it to reconstruct a
   whole day after the fact.
 - **Exportable** — dump the raw event log to `csv`, `json`, or `tsv`, or roll it
   up with `report`.
-- **No dependencies** — the CLI is pure bash + coreutils + `git` (only used when
-  tagging commits). No `jq`, no database. (The optional `wj-tui` front-end is a
-  separate, statically-linked Go binary — needed only if you opt into the UI.)
+- **No dependencies** — the CLI is pure bash + coreutils (`git` is used only to
+  auto-detect a project name inside a repo, and is optional). No `jq`, no
+  database. (The optional `wj-tui` front-end is a separate, statically-linked Go
+  binary — needed only if you opt into the UI.)
 - **Optional terminal UI** — a lazygit-style `wj-tui` with a colored multi-day
   Gantt and intraday drill-down, driven entirely by the CLI's `--json` output.
 
@@ -127,8 +126,13 @@ make install && hash -r
 ```
 
 Targets: `make install-cli` (just the bash CLI + man), `make install-ui` (just
-the UI binary), `make test`, `make clean`. Override the location with
-`PREFIX`, e.g. a system-wide install: `sudo make install PREFIX=/usr/local`.
+the UI binary), `make clean`. Override the location with `PREFIX`, e.g. a
+system-wide install: `sudo make install PREFIX=/usr/local`.
+
+**Testing.** `make test` runs both suites: `make test-cli`
+([bats](https://bats-core.readthedocs.io) tests for the bash CLI, under
+[`tests/`](tests/)) and `make test-go` (the Go suite for `wj-tui`). `make lint`
+runs golangci-lint and `make cover` reports Go coverage.
 
 > **Note on PATH:** if an older `wj` is already installed (e.g. a system package
 > in `/usr/bin`), it may shadow `~/.local/bin/wj`. Remove the old one first
@@ -152,14 +156,14 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `wj start <desc\|P#>` | Begin a new task (next id `T1`, `T2`… per day). Runs alongside any task already going in the same project (pass `--auto-pause`, or set `auto_pause=on`, to pause it first). Given a pending id (`P#`) it promotes that backlog item instead (see [Pending backlog](#pending-backlog)). |
 | `wj pause [id] [why]` | Pause the running task (or a given id). Stops its clock. |
 | `wj resume [id]` | Resume the most-recent paused/deferred task (or a given id). |
-| `wj complete [id]` | Finish a task; sum its time; record git commits in its window. |
+| `wj complete [id]` | Finish a task and sum its tracked time. |
 | `wj defer [id] [why]` | Set a task aside (blocked, or for another day). |
 | `wj log <note>` | Attach a timestamped note to the running task. |
 | `wj amend [id] <desc>` | Replace a task's description (running task, or a given id). Appends an event — history is never rewritten. |
 | `wj move [id] <proj>` | Re-home a task to another project (fix wrong auto-detection). |
 | `wj cancel [id]` | Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw log for audit). |
 | `wj ls` | List currently-open tasks (in-progress / paused / deferred). Today by default; `--days N` scans the last N days (adds a DATE column) to catch timers left running earlier. |
-| `wj show <id>` | Full timeline of one task: start, notes, pauses/resumes, renames, moves, recorded commits, total time and status. Today by default; `--date` for a past day. |
+| `wj show <id>` | Full timeline of one task: start, notes, pauses/resumes, renames, moves, total time and status. Today by default; `--date` for a past day. |
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
 | `wj grid [date]` | Slot-by-slot schedule for a day. |
 | `wj gantt [flags]` | Multi-day overview: a rows×days matrix of time totals. Rows are projects (or per-day tasks with `--by task`); columns are days. Default range: the last 7 days through `--to` (or today). Cancelled and zero-time rows are omitted. The CLI counterpart of the TUI's Range view. |
@@ -231,10 +235,9 @@ timestamp           task_id  project        event     note
 2026-06-01T09:45    T2       meetings       complete
 2026-06-01T11:00    T1       backend        resume
 2026-06-01T11:30    T1       backend        complete
-2026-06-01T11:30    T1       backend        commit    89a5697 wire up token refresh
 ```
 
-Events: `start` · `pause` · `resume` · `complete` · `defer` · `log` · `amend` · `move` · `cancel` · `commit`.
+Events: `start` · `pause` · `resume` · `complete` · `defer` · `log` · `amend` · `move` · `cancel`.
 A task's description is the note on its `start` event; its status, time totals and
 grid placement are all computed by replaying the rows.
 
@@ -267,9 +270,9 @@ display, independent of how totals are summed.
 | `round` | `down` | Grid snapping of event times: `down` or `nearest`. |
 | `totals` | `exact` | Time summing: `exact` minutes or `slot`-rounded. |
 | `default_project` | `admin` | Project used outside a git repo when no `--project` is given. |
-| `git_tag` | `on` | Record commits in a task's window on `complete`. |
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 | `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
+| `accent` | `141` | `wj-tui`'s main color (panel titles, focus, selection, prompts). A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
 
 Environment overrides:
 
@@ -353,6 +356,10 @@ as `✓ T1 12:30 completed — 1h30m`, or, for an [idempotent](#commands) no-op,
 `✓ T1 already paused`; failures show in a red `⚠` line instead. The next keypress
 dismisses it.
 
+`Ctrl+Z` suspends `wj-tui` to the background (standard job control); run `fg` to
+bring it back — it refreshes from disk on resume. `Ctrl+R` reloads, `q`/`Ctrl+C`
+quits.
+
 ```sh
 make install-ui            # build & install wj-tui (needs Go)
 wj ui                      # launch it explicitly
@@ -428,8 +435,6 @@ wj complete                 --at 11:30 --project backend
   the history is auditable and safe to sync.
 - **Task ids are per-day** (`T1`, `T2`…). Continuing yesterday's work is a fresh
   task today (give it a note); ids are not linked across days.
-- **Git window:** the commit window on `complete` spans the task's whole
-  start→complete range, including any pauses inside it.
 
 ## License
 

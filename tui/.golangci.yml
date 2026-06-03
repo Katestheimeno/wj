@@ -1,0 +1,21 @@
+# golangci-lint configuration for wj-tui.
+# Runs the standard linters plus a few low-noise extras. Kept conservative so it
+# stays a meaningful gate rather than a source of churn.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck      # unchecked errors
+    - gosimple      # simplifiable code
+    - govet         # suspicious constructs
+    - ineffassign   # assignments never used
+    - staticcheck   # broad correctness/style checks
+    - unused        # dead code
+    - misspell      # common spelling mistakes in comments/strings
+    - gofmt         # not gofmt-clean
+    - unconvert     # redundant type conversions
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -32,6 +32,8 @@ func keyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "ctrl+z":
+		return tea.KeyMsg{Type: tea.KeyCtrlZ}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
@@ -91,8 +93,32 @@ func TestFmtDur(t *testing.T) {
 	}
 }
 
+func TestSetAccent(t *testing.T) {
+	defer SetAccent(defaultAccent) // restore the default for other tests
+	SetAccent("99")
+	if got := titleStyle.GetForeground(); got != lipgloss.Color("99") {
+		t.Errorf("titleStyle foreground = %v, want 99", got)
+	}
+	if got := selStyle.GetBackground(); got != lipgloss.Color("99") {
+		t.Errorf("selStyle background = %v, want 99", got)
+	}
+	SetAccent("") // empty is a no-op (keeps the previous accent)
+	if got := titleStyle.GetForeground(); got != lipgloss.Color("99") {
+		t.Errorf("empty SetAccent should be a no-op, foreground = %v", got)
+	}
+}
+
+func TestDefaultAccentIsApplied(t *testing.T) {
+	SetAccent(defaultAccent)
+	if got := titleStyle.GetForeground(); got != lipgloss.Color(defaultAccent) {
+		t.Errorf("default accent not applied: titleStyle foreground = %v, want %s", got, defaultAccent)
+	}
+}
+
 func TestProjectColorStable(t *testing.T) {
-	if ProjectColor("backend") != ProjectColor("backend") {
+	first := ProjectColor("backend")
+	second := ProjectColor("backend")
+	if first != second {
 		t.Error("project color must be deterministic")
 	}
 }
@@ -456,9 +482,9 @@ func TestMutationErrorStaysVisible(t *testing.T) {
 func TestMutationNoticeShownAndCollapsed(t *testing.T) {
 	m := drilled()
 	// a successful mutation echoes the CLI's confirmation as a notice. A
-	// multi-line reply (complete + commits) must collapse to a single line so
-	// it can't break the fixed-height footer.
-	m, _ = mustModel(m.Update(mutationMsg{note: "T1  10:00  completed — 1h00m\n      3 commit(s) recorded"}))
+	// multi-line reply must collapse to a single line so it can't break the
+	// fixed-height footer.
+	m, _ = mustModel(m.Update(mutationMsg{note: "T1  10:00  completed — 1h00m\n      extra detail line"}))
 	if m.notice == "" {
 		t.Fatal("successful mutation should set m.notice")
 	}
@@ -497,6 +523,31 @@ func TestMutationKeyGatedToDetailPane(t *testing.T) {
 
 func mustModel(mod tea.Model, cmd tea.Cmd) (Model, tea.Cmd) {
 	return mod.(Model), cmd
+}
+
+func TestCtrlZSuspends(t *testing.T) {
+	// ctrl+z from the normal panes must emit Bubble Tea's SuspendMsg so the
+	// program drops to the background (job control).
+	_, cmd := drilled().Update(keyMsg("ctrl+z"))
+	if cmd == nil {
+		t.Fatal("ctrl+z should return a command")
+	}
+	if _, ok := cmd().(tea.SuspendMsg); !ok {
+		t.Errorf("ctrl+z should produce a tea.SuspendMsg, got %T", cmd())
+	}
+}
+
+func TestCtrlZSuspendsFromOverlay(t *testing.T) {
+	// suspend must work even while an overlay (e.g. search) is open.
+	m := drilled()
+	m.search.active = true
+	_, cmd := m.Update(keyMsg("ctrl+z"))
+	if cmd == nil {
+		t.Fatal("ctrl+z should return a command even with an overlay open")
+	}
+	if _, ok := cmd().(tea.SuspendMsg); !ok {
+		t.Errorf("ctrl+z should produce a tea.SuspendMsg, got %T", cmd())
+	}
 }
 
 func TestLayoutFillsWidthNoOverflow(t *testing.T) {

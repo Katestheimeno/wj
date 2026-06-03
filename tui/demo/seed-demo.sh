@@ -21,18 +21,16 @@ export WJ_CONFIG="${WJ_CONFIG:-$WJ_DATA_DIR/config}"
 rm -rf "$WJ_DATA_DIR"        # start clean every run
 mkdir -p "$WJ_DATA_DIR"
 
-# Pin a config so the demo is reproducible regardless of where you run it:
-# git_tag=off means seeding can't absorb real commits from the surrounding repo.
+# Pin a config so the demo is reproducible regardless of where you run it.
 cat >"$WJ_CONFIG" <<'CFG'
-# wj demo config — wj's defaults, but with commit-tagging off so the seed is
-# deterministic no matter which repo you launch it from.
+# wj demo config — wj's defaults, pinned so the seed is deterministic no matter
+# which directory you launch it from.
 shift_start=09:00
 shift_end=19:00
 slot_minutes=5
 round=down
 totals=exact
 default_project=admin
-git_tag=off
 interface=ui
 CFG
 

@@ -42,8 +42,7 @@ by default;
 pauses the project's other running task first.
 .TP
 .BI "complete " [id]
-Finish a task: sum its time and, in a git repo, record the commits made during
-its window.
+Finish a task and sum its tracked time.
 .TP
 .BI "defer " "[id] [why]"
 Set a task aside (blocked, or to pick up another day).
@@ -227,15 +226,15 @@ Config lives at
 .I totals
 (exact|slot),
 .I default_project ", "
-.I git_tag
-(on|off),
 .I interface
 (minimal|ui \(em the front-end for a bare
 .BR wj ),
-and
 .I auto_pause
 (on|off \(em start/resume auto-pause another running task in the same project;
-default off).
+default off),
+and
+.I accent
+(the wj-tui main color \(em a 256-color code, #hex, or ANSI name; default 141, a purple).
 .SH FILES
 .TP
 .I ~/.config/wj/config

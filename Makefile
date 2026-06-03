@@ -7,7 +7,10 @@ GO      ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all tui test vet fmt install install-cli install-ui uninstall clean
+BATS          ?= bats
+GOLANGCI_LINT ?= golangci-lint
+
+.PHONY: all tui test test-cli test-go lint cover vet fmt install install-cli install-ui uninstall clean
 
 all: tui
 
@@ -15,9 +18,24 @@ all: tui
 tui:
 	cd tui && $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o wj-tui .
 
-## test: run the Go test suite (incl. integration tests against ./wj)
-test:
-	cd tui && $(GO) test ./...
+## test: run both the bash (bats) and Go test suites
+test: test-cli test-go
+
+## test-cli: run the bash CLI test suite (needs bats-core: https://bats-core.readthedocs.io)
+test-cli:
+	$(BATS) tests/
+
+## test-go: run the Go test suite (incl. integration tests against ./wj)
+test-go:
+	cd tui && $(GO) test -race ./...
+
+## cover: Go test suite with a coverage summary
+cover:
+	cd tui && $(GO) test -coverprofile=coverage.out -covermode=atomic ./... && $(GO) tool cover -func=coverage.out | tail -1
+
+## lint: run golangci-lint over the Go code (needs golangci-lint on PATH)
+lint:
+	cd tui && $(GOLANGCI_LINT) run ./...
 
 vet:
 	cd tui && $(GO) vet ./...
