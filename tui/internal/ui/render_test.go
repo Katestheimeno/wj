@@ -395,13 +395,21 @@ func TestTimedMutationPromptsEvenOnToday(t *testing.T) {
 	if got := strings.Join(next.input.pending, " "); got != "pause T1 --date "+m.currentDay() {
 		t.Errorf("pending argv = %q", got)
 	}
-	// a blank submit cancels (no mutation)
-	done, cmd2 := mustModel(next.handleKey(tea.KeyMsg{Type: tea.KeyEnter}))
-	if done.input.active {
-		t.Error("enter should close the prompt")
+	// a blank submit keeps the prompt open with a hint (not a silent dismiss)
+	still, cmd2 := mustModel(next.handleKey(tea.KeyMsg{Type: tea.KeyEnter}))
+	if !still.input.active {
+		t.Error("a blank time should keep the prompt open, not dismiss it")
 	}
 	if cmd2 != nil {
-		t.Error("a blank time should cancel, not mutate")
+		t.Error("a blank time should not mutate")
+	}
+	if still.err == "" {
+		t.Error("a blank time should surface a hint")
+	}
+	// esc then aborts outright and clears the hint
+	gone, _ := mustModel(still.handleKey(tea.KeyMsg{Type: tea.KeyEsc}))
+	if gone.input.active || gone.err != "" {
+		t.Error("esc should close the prompt and clear the hint")
 	}
 }
 

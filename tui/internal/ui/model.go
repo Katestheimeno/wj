@@ -768,25 +768,40 @@ func hasFlag(args []string, flag string) bool {
 	return false
 }
 
+// keepPrompt leaves the active input open and surfaces hint (rendered as the
+// footer's ⚠ line), so an empty or incomplete submit guides the user instead of
+// silently vanishing. Esc still aborts the prompt outright.
+func (m Model) keepPrompt(hint string) (tea.Model, tea.Cmd) {
+	m.err = hint
+	return m, nil
+}
+
+// closeInput dismisses the active prompt and clears any lingering hint, called
+// once a submit has been accepted.
+func (m *Model) closeInput() {
+	m.input = inputMode{}
+	m.err = ""
+}
+
 // handleInput feeds keystrokes to the active text prompt.
 func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
 		in := m.input
-		m.input = inputMode{}
-		m.err = ""
 		val := strings.TrimSpace(in.value)
 		switch in.action {
 		case "at":
 			if val == "" {
-				return m, nil // no time -> cancel
+				return m.keepPrompt("time required (e.g. 14:30) — esc to abort")
 			}
+			m.closeInput()
 			return m, m.mutate(append(in.pending, "--at", val)...)
 		case "start":
 			desc, proj, at := parseStartInput(val)
 			if desc == "" {
-				return m, nil
+				return m.keepPrompt("description required (e.g. fix bug @proj) — esc to abort")
 			}
+			m.closeInput()
 			args := []string{desc}
 			if proj != "" {
 				args = append(args, "--project", proj)
@@ -797,24 +812,28 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.issueMutation("start", args)
 		case "amend":
 			if val == "" {
-				return m, nil
+				return m.keepPrompt("new description required — esc to abort")
 			}
+			m.closeInput()
 			return m.issueMutation("amend", []string{in.taskID, val})
 		case "move":
 			if val == "" {
-				return m, nil
+				return m.keepPrompt("project required — esc to abort")
 			}
+			m.closeInput()
 			return m.issueMutation("move", []string{in.taskID, val})
 		case "log":
 			if val == "" {
-				return m, nil
+				return m.keepPrompt("note required — esc to abort")
 			}
+			m.closeInput()
 			return m.issueMutation("log", []string{val})
 		case "add": // new pending backlog task (not a dated mutation)
 			desc, proj, due := parsePendingInput(val)
 			if desc == "" {
-				return m, nil
+				return m.keepPrompt("description required — esc to abort")
 			}
+			m.closeInput()
 			args := []string{"add", desc}
 			if proj != "" {
 				args = append(args, "--project", proj)
@@ -823,13 +842,15 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				args = append(args, "--due", due)
 			}
 			return m, m.mutate(args...)
-		case "pdue": // set or clear a pending task's deadline
+		case "pdue": // set or clear a pending task's deadline (empty clears it)
+			m.closeInput()
 			d := val
 			if d == "" {
 				d = "-"
 			}
 			return m, m.mutate("due", in.taskID, d)
 		}
+		m.closeInput()
 		return m, nil
 	case tea.KeyTab:
 		switch m.input.action {
@@ -851,7 +872,7 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyEsc, tea.KeyCtrlC:
-		m.input = inputMode{}
+		m.closeInput() // deliberate abort — silent, but clears any hint
 		return m, nil
 	case tea.KeyBackspace, tea.KeyDelete:
 		if r := []rune(m.input.value); len(r) > 0 {
