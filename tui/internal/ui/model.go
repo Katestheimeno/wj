@@ -501,7 +501,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// start a new task — global. Description plus an optional inline
 		// "@project" (⇥ cycles known projects, like the add/move prompts).
 		m.input = inputMode{active: true, action: "start",
-			prompt: "start: desc  (optional @project; ⇥ completes)"}
+			prompt: "start: desc  (optional @project ⇥completes  %time, e.g. %9:30)"}
 		return m, nil
 	}
 
@@ -686,7 +686,7 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 func (m Model) issueMutation(verb string, valueArgs []string) (tea.Model, tea.Cmd) {
 	day := m.currentDay()
 	args := baseArgs(verb, valueArgs, day)
-	if day == m.today || m.today == "" {
+	if day == m.today || m.today == "" || hasFlag(valueArgs, "--at") {
 		return m, m.mutate(args...)
 	}
 	m.input = inputMode{active: true, action: "at", pending: args,
@@ -698,6 +698,17 @@ func (m Model) issueMutation(verb string, valueArgs []string) (tea.Model, tea.Cm
 func baseArgs(verb string, valueArgs []string, day string) []string {
 	args := append([]string{verb}, valueArgs...)
 	return append(args, "--date", day)
+}
+
+// hasFlag reports whether args already contains flag (e.g. "--at"), so a
+// caller-supplied value isn't re-prompted for.
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // handleInput feeds keystrokes to the active text prompt.
@@ -715,13 +726,16 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.mutate(append(in.pending, "--at", val)...)
 		case "start":
-			desc, proj := parseStartInput(val)
+			desc, proj, at := parseStartInput(val)
 			if desc == "" {
 				return m, nil
 			}
 			args := []string{desc}
 			if proj != "" {
 				args = append(args, "--project", proj)
+			}
+			if at != "" {
+				args = append(args, "--at", at)
 			}
 			return m.issueMutation("start", args)
 		case "amend":
@@ -1323,20 +1337,25 @@ func parsePendingInput(s string) (desc, project, due string) {
 	return strings.Join(words, " "), project, due
 }
 
-// parseStartInput splits the start-prompt text into a description plus an
-// optional inline "@project" (the last @token wins). Unlike parsePendingInput
-// it has no "!due" notion, so a "!"-word stays part of the description.
-// e.g. "Fix login bug @backend" → ("Fix login bug", "backend").
-func parseStartInput(s string) (desc, project string) {
+// parseStartInput splits the start-prompt text into a description plus optional
+// inline tokens: "@project" sets the project, "%time" the start time (passed to
+// the CLI as --at; blank → the CLI defaults to now). The last @/%token wins.
+// Unlike parsePendingInput it has no "!due" notion, so a "!"-word stays part of
+// the description.
+// e.g. "Fix login bug @backend %9:30" → ("Fix login bug", "backend", "9:30").
+func parseStartInput(s string) (desc, project, at string) {
 	var words []string
 	for _, f := range strings.Fields(s) {
-		if len(f) > 1 && f[0] == '@' {
+		switch {
+		case len(f) > 1 && f[0] == '@':
 			project = f[1:]
-		} else {
+		case len(f) > 1 && f[0] == '%':
+			at = f[1:]
+		default:
 			words = append(words, f)
 		}
 	}
-	return strings.Join(words, " "), project
+	return strings.Join(words, " "), project, at
 }
 
 // dueBadge maps a deadline to an urgency glyph, color, and compact label.

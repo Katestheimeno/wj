@@ -751,18 +751,22 @@ func TestParsePendingInput(t *testing.T) {
 }
 
 func TestParseStartInput(t *testing.T) {
-	cases := []struct{ in, d, p string }{
-		{"Refactor auth", "Refactor auth", ""},
-		{"Refactor auth @backend", "Refactor auth", "backend"},
-		{"@backend Refactor auth", "Refactor auth", "backend"},
-		{"Fix the bug! now", "Fix the bug! now", ""},  // a trailing-! word stays in the desc
-		{"Ship v2 @a @backend", "Ship v2", "backend"}, // last @token wins
-		{"   spaced   out  ", "spaced out", ""},
+	cases := []struct{ in, d, p, at string }{
+		{"Refactor auth", "Refactor auth", "", ""},
+		{"Refactor auth @backend", "Refactor auth", "backend", ""},
+		{"@backend Refactor auth", "Refactor auth", "backend", ""},
+		{"Fix the bug! now", "Fix the bug! now", "", ""},      // a trailing-! word stays in the desc
+		{"Ship v2 @a @backend", "Ship v2", "backend", ""},     // last @token wins
+		{"   spaced   out  ", "spaced out", "", ""},
+		{"Refactor auth %9:30", "Refactor auth", "", "9:30"},  // inline start time
+		{"Fix login @backend %9pm", "Fix login", "backend", "9pm"},
+		{"Deploy %9 %10:15", "Deploy", "", "10:15"},           // last %token wins
+		{"50% done report", "50% done report", "", ""},        // a mid-word % stays in the desc
 	}
 	for _, c := range cases {
-		d, p := parseStartInput(c.in)
-		if d != c.d || p != c.p {
-			t.Errorf("parseStartInput(%q) = (%q,%q), want (%q,%q)", c.in, d, p, c.d, c.p)
+		d, p, at := parseStartInput(c.in)
+		if d != c.d || p != c.p || at != c.at {
+			t.Errorf("parseStartInput(%q) = (%q,%q,%q), want (%q,%q,%q)", c.in, d, p, at, c.d, c.p, c.at)
 		}
 	}
 }
