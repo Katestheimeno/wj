@@ -800,13 +800,13 @@ func TestParseStartInput(t *testing.T) {
 		{"Refactor auth", "Refactor auth", "", ""},
 		{"Refactor auth @backend", "Refactor auth", "backend", ""},
 		{"@backend Refactor auth", "Refactor auth", "backend", ""},
-		{"Fix the bug! now", "Fix the bug! now", "", ""},      // a trailing-! word stays in the desc
-		{"Ship v2 @a @backend", "Ship v2", "backend", ""},     // last @token wins
+		{"Fix the bug! now", "Fix the bug! now", "", ""},  // a trailing-! word stays in the desc
+		{"Ship v2 @a @backend", "Ship v2", "backend", ""}, // last @token wins
 		{"   spaced   out  ", "spaced out", "", ""},
-		{"Refactor auth %9:30", "Refactor auth", "", "9:30"},  // inline start time
+		{"Refactor auth %9:30", "Refactor auth", "", "9:30"}, // inline start time
 		{"Fix login @backend %9pm", "Fix login", "backend", "9pm"},
-		{"Deploy %9 %10:15", "Deploy", "", "10:15"},           // last %token wins
-		{"50% done report", "50% done report", "", ""},        // a mid-word % stays in the desc
+		{"Deploy %9 %10:15", "Deploy", "", "10:15"},    // last %token wins
+		{"50% done report", "50% done report", "", ""}, // a mid-word % stays in the desc
 	}
 	for _, c := range cases {
 		d, p, at := parseStartInput(c.in)

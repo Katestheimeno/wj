@@ -15,7 +15,7 @@
 #
 set -uo pipefail
 
-WJ_VERSION="0.1.0"
+WJ_VERSION="0.9.1"
 
 # ---------------------------------------------------------------------------
 # Defaults (overridable in the config file)
@@ -28,6 +28,8 @@ totals="exact"          # exact | slot     (how time totals are summed)
 default_project="admin" # used outside a git repo when no --project given
 git_tag="on"            # on | off — attach commits in a task's window on complete
 interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui front-end
+auto_pause="off"        # on | off — on start/resume, auto-pause a running task in
+                        # the SAME project. off = run them in parallel (default)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -77,6 +79,13 @@ git_tag=$git_tag
 # minimal -> today's status table (the classic behaviour)
 # ui      -> launch the wj-tui binary if installed, else fall back to minimal
 interface=$interface
+
+# Auto-pause on start/resume: on | off
+# on  -> starting/resuming a task pauses any other running task in the SAME project
+#        (one in-progress task per project)
+# off -> leave the other task running, so you work on several in parallel (default)
+# Override per command with --parallel / --auto-pause.
+auto_pause=$auto_pause
 EOF
 }
 
@@ -308,6 +317,13 @@ task_exists() {
 # resolve a task by current state: mode=active (in-progress) | resumable (paused/deferred).
 # Returns the most-recently-transitioned matching task, optionally filtered by project.
 # Correctly handles several concurrently-active tasks across projects.
+# effective auto-pause for this invocation: the per-command --parallel /
+# --auto-pause flags win over the config default. Returns 0 when a start/resume
+# should auto-pause the project's other running task, 1 when they run in parallel.
+autopause_on() {
+    [[ ${PAUSE_OVERRIDE:-$auto_pause} == on ]]
+}
+
 find_task() {
     local file=$1 mode=$2 proj=$3 ts id p evt note seq=0
     [[ -f $file ]] || return 0
@@ -342,7 +358,7 @@ find_task() {
 # ---------------------------------------------------------------------------
 # Argument parsing — extract global flags, leave positionals in ARGS[]
 # ---------------------------------------------------------------------------
-AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; DUE=""; JSON=0
+AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; DUE=""; JSON=0; PAUSE_OVERRIDE=""
 declare -a ARGS=()
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
 # whether $1 is a real calendar date in YYYY-MM-DD form. GNU `date -d` would
@@ -366,6 +382,8 @@ parse_args() {
             --days)     need_val "$@"; DAYS=$2;     shift 2 ;;
             --due)      need_val "$@"; DUE=$2;      shift 2 ;;
             --json)     JSON=1;                     shift ;;
+            --parallel)   PAUSE_OVERRIDE=off;        shift ;;
+            --auto-pause) PAUSE_OVERRIDE=on;         shift ;;
             --)         shift; while (( $# )); do ARGS+=("$1"); shift; done ;;
             *)          ARGS+=("$1"); shift ;;
         esac
@@ -430,9 +448,11 @@ cmd_start() {
     [[ -n $desc ]] || die "start needs a description"
     local proj ts file id active
     proj=$(cur_project); ts=$(now_ts); file=$(day_file "${ts:0:10}")
-    # auto-pause any in-progress task in the same project
-    active=$(find_task "$file" active "$proj")
-    [[ -n $active ]] && append_event "$ts" "$active" "$proj" pause "auto-paused (started new task)"
+    # auto-pause any in-progress task in the same project (unless running parallel)
+    if autopause_on; then
+        active=$(find_task "$file" active "$proj")
+        [[ -n $active ]] && append_event "$ts" "$active" "$proj" pause "auto-paused (started new task)"
+    fi
     id="T$(( $(max_task_id "$file") + 1 ))"
     append_event "$ts" "$id" "$proj" start "$desc"
     printf '%s  %s  [%s]  started %s — %s\n' "$id" "${ts:11:5}" "$proj" "$id" "$desc"
@@ -459,9 +479,11 @@ cmd_resume() {
     [[ -n $id ]] || die "no paused/deferred task to resume"
     in_status "$file" "$id" in-progress && { printf '%s  already in-progress\n' "$id"; return 0; }
     local tproj; tproj=$(task_project "$file" "$id")
-    # auto-pause an in-progress task in that project first
-    local active; active=$(find_task "$file" active "$tproj")
-    [[ -n $active && $active != "$id" ]] && append_event "$ts" "$active" "$tproj" pause "auto-paused (resumed $id)"
+    # auto-pause an in-progress task in that project first (unless running parallel)
+    if autopause_on; then
+        local active; active=$(find_task "$file" active "$tproj")
+        [[ -n $active && $active != "$id" ]] && append_event "$ts" "$active" "$tproj" pause "auto-paused (resumed $id)"
+    fi
     append_event "$ts" "$id" "$tproj" resume ""
     printf '%s  %s  resumed — %s\n' "$id" "${ts:11:5}" "$(task_desc "$file" "$id")"
 }
@@ -1215,7 +1237,7 @@ _wj() {
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
     cmds="start pause resume complete defer log amend move cancel ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
-    flags="--at --date --project --from --to --format --by --days --due --json"
+    flags="--at --date --project --from --to --format --by --days --due --json --parallel --auto-pause"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
     fi
@@ -1256,10 +1278,13 @@ USAGE
 
 TASK COMMANDS
   start <desc|P#>     Begin a new task. Gets the next id (T1, T2, ... per day).
-                      Auto-pauses any running task in the SAME project. Given a
-                      pending id (P#) it promotes that backlog item instead.
+                      Runs alongside any task already going in the SAME project
+                      (use --auto-pause, or auto_pause=on, to pause it first).
+                      Given a pending id (P#) it promotes that backlog item instead.
   pause  [id] [why]   Pause the running task (or the given id). Stops its clock.
   resume [id]         Resume the most-recent paused/deferred task (or given id).
+                      Runs in parallel by default; --auto-pause pauses the
+                      project's other running task first.
   complete [id]       Finish a task: sum its time and, in a git repo, record the
                       commits made during its window.
   defer  [id] [why]   Set a task aside (e.g. blocked / picking it up another day).
@@ -1326,14 +1351,22 @@ FLAGS
                       (gantt). Default: project.
   --due YYYY-MM-DD    add: optional deadline for a pending task.
   --format FMT        export format: csv | json | tsv. Default: csv.
+  --parallel          start/resume: leave any other running task in the same
+                      project running, so you track several in parallel.
+  --auto-pause        start/resume: auto-pause the project's other running task
+                      first (one in-progress task per project). These two flags
+                      override the auto_pause config for a single command.
 
 STATUSES & GRID SYMBOLS
   in-progress  >>     paused  --     completed  **     deferred  ~~     (idle blank)
   cancelled tasks are voided and omitted from views (still in the raw log).
 
 CONCURRENCY
-  Only one task per project runs at a time (starting/resuming auto-pauses the
-  previous one). Different projects CAN run at once — each is its own grid column.
+  By default tasks run in parallel: starting or resuming a task leaves any other
+  running task untouched (auto_pause=off). Set auto_pause=on, or pass --auto-pause,
+  to keep one in-progress task per project (start/resume auto-pauses the previous
+  one); --parallel forces the opposite for a single command. Different projects
+  always run at once — each is its own grid column.
 
 IDEMPOTENT STATE CHANGES
   Repeating an action whose state the task already holds does nothing: pause on
@@ -1348,6 +1381,7 @@ CONFIG  (~/.config/wj/config — created on first run)
   default_project           project used outside a git repo          (admin)
   git_tag                   record commits on complete: on | off     (on)
   interface                 bare-wj front-end: minimal | ui          (minimal)
+  auto_pause                start/resume auto-pause same project     (off)
 
 EXAMPLES
   wj start "Refactor auth" --project backend   # start tracking
@@ -1360,6 +1394,8 @@ EXAMPLES
   wj start "Standup" --project meetings         # a different, non-git project
   wj complete --project meetings                # finish standup
   wj resume                                     # back to the refactor (most-recent paused)
+  wj start "Code review" --auto-pause           # pause the refactor first, one at a time
+  wj start "Quick fix"                          # default: runs alongside the refactor
   wj complete                                   # finish it; commits recorded
   wj ls                                         # what's open right now
   wj ls --days 7                                # anything left open this past week

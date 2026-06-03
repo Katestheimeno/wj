@@ -154,11 +154,12 @@ type Model struct {
 	pending []wj.Pending // the not-yet-started backlog (its own panel)
 	selPend int          // index into pending
 
-	live     *wj.Status // today's status, for the running-task header clock
-	liveAt   time.Time  // wall-clock time m.live was fetched
-	projects []string   // known project names (move autocomplete)
-	tickN    int        // 1s ticks since start; data reloads every dataEveryTicks
-	tlOffset int        // timeline scroll position
+	live      *wj.Status // today's status, for the running-task header clock
+	liveAt    time.Time  // wall-clock time m.live was fetched
+	projects  []string   // known project names (move autocomplete)
+	tickN     int        // 1s ticks since start; data reloads every dataEveryTicks
+	tlOffset  int        // timeline scroll position
+	autoPause bool       // when true, start/resume pause the project's other running task
 }
 
 // New builds the initial model. from/to may be empty to use the CLI default
@@ -504,6 +505,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input = inputMode{active: true, action: "start",
 			prompt: "start: desc  (optional @project ⇥completes  %time, e.g. %9:30)"}
 		return m, nil
+	case "A":
+		// toggle how start/resume treat another running task in the same project:
+		// parallel (default) vs auto-pause the previous one.
+		m.autoPause = !m.autoPause
+		if m.autoPause {
+			m.notice = "start/resume: auto-pause same-project task (one at a time)"
+		} else {
+			m.notice = "start/resume: run in parallel (same-project tasks coexist)"
+		}
+		return m, nil
 	}
 
 	// task-targeted mutations, only when a task is selected in a detail pane
@@ -703,7 +714,7 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 // an explicit --at and the action can't collapse to a zero-length interval.
 func (m Model) issueMutation(verb string, valueArgs []string) (tea.Model, tea.Cmd) {
 	day := m.currentDay()
-	args := baseArgs(verb, valueArgs, day)
+	args := baseArgs(verb, m.withPauseFlag(verb, valueArgs), day)
 	if day == m.today || m.today == "" || hasFlag(valueArgs, "--at") {
 		return m, m.mutate(args...)
 	}
@@ -719,9 +730,25 @@ func (m Model) issueMutation(verb string, valueArgs []string) (tea.Model, tea.Cm
 func (m Model) promptTimedMutation(verb string, valueArgs []string) (tea.Model, tea.Cmd) {
 	day := m.currentDay()
 	label := strings.TrimSpace(verb + " " + strings.Join(valueArgs, " "))
-	m.input = inputMode{active: true, action: "at", pending: baseArgs(verb, valueArgs, day),
+	m.input = inputMode{active: true, action: "at", pending: baseArgs(verb, m.withPauseFlag(verb, valueArgs), day),
 		prompt: label + " — time (e.g. 14:30)"}
 	return m, nil
+}
+
+// withPauseFlag appends the explicit --parallel / --auto-pause flag for the two
+// verbs that auto-pause (start, resume), so the TUI's behaviour is independent of
+// the auto_pause config and follows the in-session toggle (default: parallel).
+// Other verbs pass through unchanged. A fresh slice is returned so the caller's
+// valueArgs is never mutated.
+func (m Model) withPauseFlag(verb string, valueArgs []string) []string {
+	out := append([]string{}, valueArgs...)
+	if verb != "start" && verb != "resume" {
+		return out
+	}
+	if m.autoPause {
+		return append(out, "--auto-pause")
+	}
+	return append(out, "--parallel")
 }
 
 // baseArgs assembles `verb <valueArgs...> --date <day>` (pure, for testing).
@@ -1505,9 +1532,18 @@ func (m Model) runningHeader() string {
 		mins := t.Minutes + int(time.Since(m.liveAt).Minutes())
 		color := ProjectColor(t.Project)
 		run := lipgloss.NewStyle().Foreground(color).Render("▶ " + t.ID + " [" + t.Project + "]")
-		return run + " " + t.Desc + dimStyle.Render(" · "+fmtDur(mins))
+		return run + " " + t.Desc + dimStyle.Render(" · "+fmtDur(mins)) + m.pauseBadge()
 	}
-	return dimStyle.Render("◦ idle")
+	return dimStyle.Render("◦ idle") + m.pauseBadge()
+}
+
+// pauseBadge is a compact indicator of how start/resume treat a same-project
+// running task: parallel (default) or auto-pause. Toggled with "A".
+func (m Model) pauseBadge() string {
+	if m.autoPause {
+		return dimStyle.Render(" · ⇄ 1-at-a-time")
+	}
+	return dimStyle.Render(" · ∥ parallel")
 }
 
 // footerLine is a short, context-sensitive hint that fits on one line; the full
@@ -1515,7 +1551,7 @@ func (m Model) runningHeader() string {
 func (m Model) footerLine() string {
 	switch m.pane {
 	case paneRange:
-		return "j/k project · l drill · ←→ day · [ ] window · 1/7/3 span · b by · / search · s start · ? help · q quit"
+		return "j/k project · l drill · ←→ day · [ ] window · 1/7/3 span · b by · / search · s start · A par/seq · ? help · q quit"
 	case paneDay:
 		return "j/k task · l timeline · h back · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · / search · ? help"
 	case panePending:
@@ -1592,6 +1628,7 @@ func (m Model) helpOverlay() string {
 		{"[ / ]", "move it up / down · x drop it"},
 		{"~Actions (on the selected task)", ""},
 		{"s", "start a new task: 'desc @project %time' (both optional; ⇥ completes)"},
+		{"A", "toggle start/resume: ∥ parallel (default) vs ⇄ auto-pause same project"},
 		{"p / r / c / d", "pause / resume / complete / defer (now)"},
 		{"P / R / C / D", "same, but prompt for an explicit time (--at)"},
 		{"a / m", "amend description / move (⇥ completes project)"},

@@ -41,8 +41,10 @@ Total tracked: 1h15m
 ## Features
 
 - **Cross-project** — one task list per day, shared across all your repos.
-- **Concurrency-aware** — one running task *per project*, but different projects
-  can run at the same time (each is its own grid column).
+- **Concurrency-aware** — tasks run in parallel by default, including several in
+  the same project; flip `auto_pause=on` (or pass `--auto-pause`) to keep one
+  running task per project. Different projects always run at once (each is its
+  own grid column).
 - **Time grid** — a configurable slot grid (default 5-minute "jumps", 09:00–19:00)
   visualises the shape of your day.
 - **Multi-day overview** — `wj gantt` prints a projects(or tasks)×days matrix of
@@ -137,7 +139,7 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 
 | Command | What it does |
 |---|---|
-| `wj start <desc\|P#>` | Begin a new task (next id `T1`, `T2`… per day). Auto-pauses the running task in the same project. Given a pending id (`P#`) it promotes that backlog item instead (see [Pending backlog](#pending-backlog)). |
+| `wj start <desc\|P#>` | Begin a new task (next id `T1`, `T2`… per day). Runs alongside any task already going in the same project (pass `--auto-pause`, or set `auto_pause=on`, to pause it first). Given a pending id (`P#`) it promotes that backlog item instead (see [Pending backlog](#pending-backlog)). |
 | `wj pause [id] [why]` | Pause the running task (or a given id). Stops its clock. |
 | `wj resume [id]` | Resume the most-recent paused/deferred task (or a given id). |
 | `wj complete [id]` | Finish a task; sum its time; record git commits in its window. |
@@ -172,6 +174,7 @@ First run seeds a config file at `~/.config/wj/config`. Data is written under
 | `--format FMT` | export | `csv` \| `json` \| `tsv`. Default: `csv`. |
 | `--days N` | ls | How many days back to scan for open tasks. Default: `1` (today). |
 | `--due YYYY-MM-DD` | add | Optional deadline for a pending task. |
+| `--parallel` / `--auto-pause` | start, resume | Override the `auto_pause` config for one command. `--parallel` leaves any other running task in the same project running; `--auto-pause` pauses it first (one in-progress task per project). |
 | `--json` | status, show, grid, gantt, search, pending | Emit machine-readable JSON instead of the text table — a stable contract (this is what the `wj-tui` front-end consumes). |
 
 If you omit `--project` on `pause`/`complete`/`log`/`amend`/`move`/`cancel`, the
@@ -213,7 +216,7 @@ rewritten:
 ```
 timestamp           task_id  project        event     note
 2026-06-01T09:00    T1       backend        start     Refactor auth
-2026-06-01T09:30    T1       backend        pause     auto-paused (started new task)
+2026-06-01T09:30    T1       backend        pause     heading into standup
 2026-06-01T09:30    T2       meetings       start     Standup
 2026-06-01T09:45    T2       meetings       complete
 2026-06-01T11:00    T1       backend        resume
@@ -256,6 +259,7 @@ display, independent of how totals are summed.
 | `default_project` | `admin` | Project used outside a git repo when no `--project` is given. |
 | `git_tag` | `on` | Record commits in a task's window on `complete`. |
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
+| `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
 
 Environment overrides:
 
@@ -322,6 +326,9 @@ autocomplete), `n` log a note, `x` cancel (with a confirm); `s` starts a
 brand-new task — type a description with an optional inline `@project` (`⇥`
 completes a known project, or just type a new name; omit it to auto-detect) and
 an optional inline `%time` (e.g. `%9:30`) to backdate the start — omit it for now.
+`A` toggles how `start`/`resume` treat another running task in the same project —
+`∥ parallel` (the default) keeps it running, `⇄ 1-at-a-time` auto-pauses it first;
+the current mode shows next to the running-task header.
 
 To do any of `pause`/`resume`/`complete`/`defer`/`cancel` **at an explicit time**
 rather than now, use the **Shift** variant — `P`/`R`/`C`/`D`/`X` — which opens a

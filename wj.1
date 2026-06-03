@@ -24,15 +24,22 @@ is set to
 .SH TASK COMMANDS
 .TP
 .BI "start " "desc | P#"
-Begin a new task; it gets the next id (T1, T2, ... per day). Auto-pauses any
-running task in the same project. Given a pending id (P#) it promotes that
+Begin a new task; it gets the next id (T1, T2, ... per day). Runs alongside any
+task already going in the same project; pass
+.B --auto-pause
+(or set
+.B auto_pause=on
+in the config) to pause that task first. Given a pending id (P#) it promotes that
 backlog item instead, carrying its description and project.
 .TP
 .BI "pause " "[id] [why]"
 Pause the running task (or the given id). Stops its clock.
 .TP
 .BI "resume " [id]
-Resume the most-recent paused/deferred task (or the given id).
+Resume the most-recent paused/deferred task (or the given id). Runs in parallel
+by default;
+.B --auto-pause
+pauses the project's other running task first.
 .TP
 .BI "complete " [id]
 Finish a task: sum its time and, in a git repo, record the commits made during
@@ -183,6 +190,31 @@ Optional deadline for a pending task (add).
 .TP
 .B --json
 Emit a machine-readable view (status, show, grid, gantt, search, pending).
+.TP
+.B --parallel
+start/resume: leave any other running task in the same project running (track
+several in parallel). Overrides the
+.B auto_pause
+config for one command.
+.TP
+.B --auto-pause
+start/resume: auto-pause the project's other running task first (one in-progress
+task per project). Overrides the
+.B auto_pause
+config for one command.
+.SH CONCURRENCY
+By default tasks run in parallel: starting or resuming a task leaves any other
+running task untouched
+.RB ( auto_pause=off ).
+Set
+.B auto_pause=on
+\(em or pass
+.B --auto-pause
+\(em to keep one in-progress task per project (start/resume auto-pauses the
+previous one);
+.B --parallel
+forces the opposite for a single command. Different projects always run at once,
+each its own grid column.
 .SH CONFIGURATION
 Config lives at
 .I ~/.config/wj/config
@@ -196,10 +228,14 @@ Config lives at
 (exact|slot),
 .I default_project ", "
 .I git_tag
-(on|off), and
+(on|off),
 .I interface
 (minimal|ui \(em the front-end for a bare
-.BR wj ).
+.BR wj ),
+and
+.I auto_pause
+(on|off \(em start/resume auto-pause another running task in the same project;
+default off).
 .SH FILES
 .TP
 .I ~/.config/wj/config
@@ -212,6 +248,8 @@ The append-only event log (override with \fB$WJ_DATA_DIR\fR).
 .nf
 wj start "Refactor auth" --project backend
 wj log "extracted token service"
+wj start "Code review" --project backend          # runs alongside the refactor
+wj start "Standup" --project backend --auto-pause  # pause the others first
 wj pause
 wj resume
 wj complete
