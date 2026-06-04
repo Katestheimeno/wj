@@ -32,6 +32,17 @@ task already going in the same project; pass
 in the config) to pause that task first. Given a pending id (P#) it promotes that
 backlog item instead, carrying its description and project.
 .TP
+.BI "continue " "id " "\fB--date\fR " date
+Pick up a past day's task today: copies that task's description and project into a
+fresh task for today (a new id, with its own clock) and appends a note recording
+the lineage (\fIcontinued from <date> <id>\fR). The
+.B --date
+source day is required; the new task is always written to today. Use
+.B --at
+to set its start time and
+.B --project
+to override the carried-over project. The original task is left untouched.
+.TP
 .BI "pause " "[id] [why]"
 Pause the running task (or the given id). Stops its clock.
 .TP

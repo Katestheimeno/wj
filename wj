@@ -15,7 +15,7 @@
 #
 set -uo pipefail
 
-WJ_VERSION="0.10.0"
+WJ_VERSION="0.10.1"
 
 # ---------------------------------------------------------------------------
 # Defaults (overridable in the config file)
@@ -637,6 +637,38 @@ cmd_start() {
     id="T$(( $(max_task_id "$file") + 1 ))"
     append_event "$ts" "$id" "$proj" start "$desc"
     printf '%s  %s  [%s]  started %s — %s\n' "$id" "${ts:11:5}" "$proj" "$id" "$desc"
+}
+
+# continue a past day's task as a fresh task TODAY. --date picks the source day
+# (required); we copy that task's description and project into a brand-new T#
+# written to today, and append a `log` event recording the lineage. The write is
+# always today (ON is the *source*, never the write target); --at sets its start
+# time, --project overrides the carried-over project. Task ids are per-day, so
+# the new task gets today's next id — the original is left untouched.
+cmd_continue() {
+    local id=${ARGS[0]:-} src desc proj
+    [[ -n $id ]] || die "continue needs a task id (e.g. wj continue T1 --date 2026-06-02)"
+    [[ $id =~ ^T[0-9]+$ ]] || die "not a task id: $id (e.g. T1)"
+    [[ -n $ON ]] || die "continue needs --date YYYY-MM-DD (the day to copy the task from)"
+    [[ $ON != "$TODAY" ]] || die "continue copies from a past day; use resume/start for today's tasks"
+    src=$(day_file "$ON")
+    task_exists "$src" "$id" || die "no such task on $ON: $id"
+    desc=$(task_desc "$src" "$id")
+    proj=$(task_project "$src" "$id")
+    [[ -n $PROJECT_OVERRIDE ]] || PROJECT_OVERRIDE=$proj
+    # write to today, not ON: build the timestamp from today + (--at | now).
+    local wts wfile newid active
+    wts="${TODAY}T${AT:-$(date +%H:%M)}"
+    wfile=$(day_file "$TODAY")
+    if autopause_on; then
+        active=$(find_task "$wfile" active "$PROJECT_OVERRIDE")
+        [[ -n $active ]] && append_event "$wts" "$active" "$PROJECT_OVERRIDE" pause "auto-paused (continued $id)"
+    fi
+    newid="T$(( $(max_task_id "$wfile") + 1 ))"
+    append_event "$wts" "$newid" "$PROJECT_OVERRIDE" start "$desc"
+    append_event "$wts" "$newid" "$PROJECT_OVERRIDE" log "continued from $ON $id"
+    printf '%s  %s  [%s]  started %s — %s  (continued from %s %s)\n' \
+        "$newid" "${wts:11:5}" "$PROJECT_OVERRIDE" "$newid" "$desc" "$ON" "$id"
 }
 
 cmd_pause() {
@@ -1403,7 +1435,7 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start pause resume complete defer log amend move cancel ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
+    cmds="start continue pause resume complete defer log amend move cancel ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
     flags="--at --date --project --from --to --format --by --days --due --json --parallel --auto-pause"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
@@ -1417,7 +1449,7 @@ _wj() {
     if [[ $cur == -* ]]; then COMPREPLY=( $(compgen -W "$flags" -- "$cur") ); return; fi
     cmd=${COMP_WORDS[1]}
     case $cmd in
-        pause|resume|complete|defer|amend|move|cancel|show)
+        continue|pause|resume|complete|defer|amend|move|cancel|show)
             COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") ) ;;
         drop|due|raise|lower)
             COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") ) ;;
@@ -1448,6 +1480,10 @@ TASK COMMANDS
                       Runs alongside any task already going in the SAME project
                       (use --auto-pause, or auto_pause=on, to pause it first).
                       Given a pending id (P#) it promotes that backlog item instead.
+  continue <id>       Pick up a past day's task today: copies its description and
+                      --date YYYY-MM-DD  project into a fresh task for today (new id, own clock) and
+                      notes the lineage. --date (the source day) is required;
+                      --at sets the start time, --project overrides the project.
   pause  [id] [why]   Pause the running task (or the given id). Stops its clock.
   resume [id]         Resume the most-recent paused/deferred task (or given id).
                       Runs in parallel by default; --auto-pause pauses the
@@ -1612,7 +1648,7 @@ main() {
     # mutating commands take a process-wide lock so concurrent invocations can't
     # interleave their read-derive-append sequences (see acquire_lock).
     case $cmd in
-        start|pause|resume|complete|defer|log|amend|move|cancel|add|drop|due|raise|lower)
+        start|continue|pause|resume|complete|defer|log|amend|move|cancel|add|drop|due|raise|lower)
             acquire_lock ;;
     esac
     case $cmd in
@@ -1650,6 +1686,7 @@ main() {
             exec wj-tui "${uiargs[@]}" ;;
         gantt)    cmd_gantt ;;
         start)    cmd_start ;;
+        continue) cmd_continue ;;
         pause)    cmd_pause ;;
         resume)   cmd_resume ;;
         complete) cmd_complete ;;

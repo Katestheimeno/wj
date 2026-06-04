@@ -408,6 +408,16 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.confirm = confirmMode{active: true, prompt: "cancel (void) " + id + " at a time?",
 			verb: "cancel", valueArgs: []string{id}, atTime: true}
 		return m, nil, true
+	case "o": // continue (carry over) a past day's task as a fresh task today
+		day := m.currentDay()
+		if day == "" || day == m.today {
+			m.notice = "continue copies a past day's task into today — switch to a past day with ←/→"
+			return m, nil, true
+		}
+		// the focused (past) day is the *source*; the CLI always writes to today,
+		// so run directly rather than via issueMutation's past-day time prompt.
+		args := baseArgs("continue", m.withPauseFlag("continue", []string{id}), day)
+		return m, m.mutate(args...), true
 	case "a":
 		m.input = inputMode{active: true, action: "amend",
 			prompt: "amend " + id + " (new description)", taskID: id}
@@ -455,14 +465,14 @@ func (m Model) promptTimedMutation(verb string, valueArgs []string) (tea.Model, 
 	return m, nil
 }
 
-// withPauseFlag appends the explicit --parallel / --auto-pause flag for the two
-// verbs that auto-pause (start, resume), so the TUI's behaviour is independent of
+// withPauseFlag appends the explicit --parallel / --auto-pause flag for the
+// verbs that auto-pause (start, resume, continue), so the TUI's behaviour is independent of
 // the auto_pause config and follows the in-session toggle (default: parallel).
 // Other verbs pass through unchanged. A fresh slice is returned so the caller's
 // valueArgs is never mutated.
 func (m Model) withPauseFlag(verb string, valueArgs []string) []string {
 	out := append([]string{}, valueArgs...)
-	if verb != "start" && verb != "resume" {
+	if verb != "start" && verb != "resume" && verb != "continue" {
 		return out
 	}
 	if m.autoPause {

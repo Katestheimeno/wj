@@ -184,7 +184,7 @@ func drilled() Model {
 	m := sampleModel()
 	m.pane = paneDay
 	m.grid = &wj.Grid{
-		Date: "2026-05-28", ShiftStart: "09:00", ShiftEnd: "19:00", SlotMinutes: 5, Now: "12:30",
+		Date: "2026-05-28", ShiftStart: "09:00", ShiftEnd: "19:00", Now: "12:30",
 		Tasks: []wj.GridTask{
 			{ID: "T1", Project: "backend", Desc: "Refactor auth", Status: "completed", Minutes: 180,
 				Segments: []wj.Segment{{From: "09:00", To: "10:30", State: "pause"}, {From: "11:00", To: "12:30", State: "complete"}}},

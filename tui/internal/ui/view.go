@@ -536,7 +536,7 @@ func (m Model) footerLine() string {
 	case paneRange:
 		return "j/k project · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · z zoom · b by · / search · s start · ? help"
 	case paneDay:
-		return "j/k task · h/l panel · 1-4 jump · z zoom · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · / search · ?"
+		return "j/k task · h/l panel · 1-4 jump · z zoom · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · o carry-over to today · / search · ?"
 	case panePending:
 		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h/l panel · z zoom · ? help"
 	default:
@@ -620,6 +620,7 @@ func (m Model) helpOverlay() string {
 		{"P / R / C / D", "same, but prompt for an explicit time (--at)"},
 		{"a / m", "amend description / move (⇥ completes project)"},
 		{"n", "add a note (log) to the running task"},
+		{"o", "carry over (continue) a past day's task today — copies desc + project to a new id"},
 		{"x / X", "cancel (void) — asks to confirm · X also prompts for a time"},
 		{"", "on a past day, actions prompt for a time first"},
 		{"~General", ""},
@@ -870,8 +871,11 @@ func (m Model) renderDay(innerW, maxBody int) string {
 	for h := (start + 59) / 60 * 60; h <= end; h += 120 {
 		lbl := []rune(fmt.Sprintf("%02d", h/60))
 		at := col(h)
+		if at+len(lbl) > axisW { // would overflow the right edge: pull the label in
+			at = axisW - len(lbl)
+		}
 		for i, r := range lbl {
-			if at+i < axisW {
+			if at+i >= 0 && at+i < axisW {
 				ticks[at+i] = r
 			}
 		}
