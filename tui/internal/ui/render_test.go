@@ -317,7 +317,7 @@ func TestPadCenter(t *testing.T) {
 func TestInputAndConfirmRender(t *testing.T) {
 	// active input prompt shows in the footer area
 	m := drilled()
-	m.input = inputMode{active: true, action: "amend", prompt: "amend T1 (new description)", value: "Refac"}
+	m.input = inputMode{active: true, action: "amend", prompt: "amend T1 (new description)", value: "Refac", cursor: 5}
 	out := m.View()
 	if !strings.Contains(out, "amend T1 (new description): Refac") {
 		t.Errorf("input prompt not rendered:\n%s", out)

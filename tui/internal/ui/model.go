@@ -95,6 +95,7 @@ type inputMode struct {
 	action   string // "start" | "amend" | "move" | "log" | "at" (at = run pending argv with --at <value>)
 	prompt   string
 	value    string
+	cursor   int      // caret position within value, in runes (0..len)
 	taskID   string   // target task for amend/move
 	pending  []string // for action "at": the wj argv awaiting an --at suffix
 	acPrefix string   // move autocomplete: the prefix Tab cycles matches for

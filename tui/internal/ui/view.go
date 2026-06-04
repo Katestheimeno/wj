@@ -165,7 +165,7 @@ func (m Model) renderFooter(w int) string {
 	}
 	switch {
 	case m.input.active:
-		b.WriteString(inputStyle.Render(truncate(m.input.prompt+": "+m.input.value+"▏", w)) + "\n")
+		b.WriteString(inputStyle.Render(truncate(m.input.prompt+": "+withCursor(m.input.value, m.input.cursor), w)) + "\n")
 		hint := "[enter] confirm   [esc] cancel"
 		if m.input.action == "move" {
 			prefix := m.input.value
@@ -310,7 +310,7 @@ func (m Model) renderMain(w, h int, fill bool) string {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			panel("Range", colorRange, m.rangeBody(innerW, 1<<30), m.pane == paneRange, w, 0),
 			panel(dayTitle, colorDay, m.renderDay(innerW, 1<<30), m.pane == paneDay, w, 0),
-			panel(tlTitle, colorTimeline, m.renderTimeline(1<<30), m.pane == paneTimeline, w, 0),
+			panel(tlTitle, colorTimeline, m.renderTimeline(innerW, 1<<30), m.pane == paneTimeline, w, 0),
 		)
 	}
 	// the main column has 3 panels (Range/Day/Timeline); Pending (pane 3) lives
@@ -323,7 +323,7 @@ func (m Model) renderMain(w, h int, fill bool) string {
 	return lipgloss.JoinVertical(lipgloss.Left,
 		panel("Range", colorRange, m.rangeBody(innerW, hs[0]-3), m.pane == paneRange, w, hs[0]),
 		panel(dayTitle, colorDay, m.renderDay(innerW, hs[1]-3), m.pane == paneDay, w, hs[1]),
-		panel(tlTitle, colorTimeline, m.renderTimeline(hs[2]-3), m.pane == paneTimeline, w, hs[2]),
+		panel(tlTitle, colorTimeline, m.renderTimeline(innerW, hs[2]-3), m.pane == paneTimeline, w, hs[2]),
 	)
 }
 
@@ -356,7 +356,7 @@ func (m Model) renderZoom(w, h int, fill bool) string {
 		if m.show != nil {
 			title = "Timeline · " + m.show.ID
 		}
-		return panel(title, colorTimeline, m.renderTimeline(body), true, w, ph)
+		return panel(title, colorTimeline, m.renderTimeline(innerW, body), true, w, ph)
 	}
 }
 
@@ -702,7 +702,7 @@ func listLine(glyph string, glyphColor, labelColor lipgloss.Color, left, right s
 	if leftMax < 1 {
 		leftMax = 1
 	}
-	l := padRight(left, leftMax)
+	l := padRight(truncate(left, leftMax), leftMax)
 	if selected {
 		return selStyle.Render(padRight(glyph+" "+l+" "+right, cw))
 	}
@@ -925,22 +925,26 @@ func (m Model) renderDay(innerW, maxBody int) string {
 	return out
 }
 
-// renderTimeline lists the selected task's events, scrollable via tlOffset.
-func (m Model) renderTimeline(maxBody int) string {
+// renderTimeline lists the selected task's events, scrollable via tlOffset. Long
+// descriptions word-wrap with a hanging indent so continuation lines align under
+// the description column rather than flowing back to the left edge.
+func (m Model) renderTimeline(innerW, maxBody int) string {
 	if m.show == nil {
 		return dimStyle.Render("(select a task)")
 	}
 	s := m.show
+	cw := max2(innerW, 8)
 	head := lipgloss.NewStyle().Foreground(ProjectColor(s.Project)).
-		Render(fmt.Sprintf("%s  [%s]  %s", s.ID, s.Project, s.Desc))
+		Render(hangingRow(fmt.Sprintf("%s  [%s]  ", s.ID, s.Project), s.Desc, cw))
 	sub := dimStyle.Render(fmt.Sprintf("%s · %s · %s", s.Date, s.Status, fmtDur(s.Minutes)))
 
 	rows := make([]string, len(s.Events))
 	for i, e := range s.Events {
 		label, extra := timelineLabel(e)
-		rows[i] = fmt.Sprintf("  %s  %-9s  %s", e.Time, label, extra)
+		// columns: 2 gutter + time(5) + 2 + status(9, left) + 2, then the desc
+		rows[i] = hangingRow(fmt.Sprintf("  %s  %-9s  ", e.Time, label), extra, cw)
 	}
-	rows = windowRows(rows, m.tlOffset, maxBody-2) // 2 head lines
+	rows = windowRows(rows, m.tlOffset, maxBody-1-lineCount(head)) // head (wraps) + sub line
 	return head + "\n" + sub + "\n" + strings.Join(rows, "\n")
 }
 

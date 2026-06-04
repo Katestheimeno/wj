@@ -74,6 +74,117 @@ func truncate(s string, w int) string {
 	return string(r[:w-1]) + "…"
 }
 
+// runeInsert inserts ins at rune index i in s, returning the new string and the
+// cursor position just after the inserted text. i is clamped into range.
+func runeInsert(s string, i int, ins string) (string, int) {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	ir := []rune(ins)
+	out := make([]rune, 0, len(r)+len(ir))
+	out = append(out, r[:i]...)
+	out = append(out, ir...)
+	out = append(out, r[i:]...)
+	return string(out), i + len(ir)
+}
+
+// runeDeleteBefore removes the rune immediately before index i (Backspace) and
+// returns the new string with the cursor at i-1. No-op when i<=0.
+func runeDeleteBefore(s string, i int) (string, int) {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	if i == 0 {
+		return s, 0
+	}
+	out := append(append([]rune{}, r[:i-1]...), r[i:]...)
+	return string(out), i - 1
+}
+
+// runeDeleteAt removes the rune at index i (forward Delete), leaving the cursor
+// in place. No-op when i is at or past the end.
+func runeDeleteAt(s string, i int) (string, int) {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	if i >= len(r) {
+		return s, len(r)
+	}
+	out := append(append([]rune{}, r[:i]...), r[i+1:]...)
+	return string(out), i
+}
+
+// withCursor renders value with an insertion-bar cursor (▏) at rune index i,
+// so the prompt shows where typed text will land.
+func withCursor(value string, i int) string {
+	r := []rune(value)
+	i = clamp(i, 0, len(r))
+	return string(r[:i]) + "▏" + string(r[i:])
+}
+
+// wrapWords splits s into lines no wider than w display columns (rune-based),
+// breaking on spaces. A single word longer than w is hard-cut. Existing newlines
+// in s start fresh lines. Returns at least one line (possibly empty).
+func wrapWords(s string, w int) []string {
+	if w < 1 {
+		w = 1
+	}
+	var lines []string
+	for _, para := range strings.Split(s, "\n") {
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			lines = append(lines, "")
+			continue
+		}
+		cur := ""
+		for _, word := range words {
+			for len([]rune(word)) > w { // hard-split an oversized word
+				if cur != "" {
+					lines = append(lines, cur)
+					cur = ""
+				}
+				r := []rune(word)
+				lines = append(lines, string(r[:w]))
+				word = string(r[w:])
+			}
+			switch {
+			case cur == "":
+				cur = word
+			case len([]rune(cur))+1+len([]rune(word)) <= w:
+				cur += " " + word
+			default:
+				lines = append(lines, cur)
+				cur = word
+			}
+		}
+		if cur != "" {
+			lines = append(lines, cur)
+		}
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+// hangingRow renders a plain-text prefix followed by body, word-wrapped to width
+// w, with every continuation line indented to align under the body (a hanging
+// indent). prefix must be unstyled — its rune length sets the indent.
+func hangingRow(prefix, body string, w int) string {
+	indent := len([]rune(prefix))
+	textW := w - indent
+	if textW < 1 {
+		textW = 1
+	}
+	if strings.TrimSpace(body) == "" {
+		return prefix + body
+	}
+	lines := wrapWords(body, textW)
+	pad := strings.Repeat(" ", indent)
+	out := prefix + lines[0]
+	for _, l := range lines[1:] {
+		out += "\n" + pad + l
+	}
+	return out
+}
+
 func shortDate(d string) string {
 	if len(d) >= 10 {
 		return d[5:]

@@ -602,18 +602,37 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.input.value = head + m.cycleProject(m.input.acPrefix, proj)
 			}
 		}
+		m.input.cursor = len([]rune(m.input.value)) // autocomplete lands the caret at the end
 		return m, nil
 	case tea.KeyEsc, tea.KeyCtrlC:
 		m.closeInput() // deliberate abort — silent, but clears any hint
 		return m, nil
-	case tea.KeyBackspace, tea.KeyDelete:
-		if r := []rune(m.input.value); len(r) > 0 {
-			m.input.value = string(r[:len(r)-1])
+	case tea.KeyLeft:
+		if m.input.cursor > 0 {
+			m.input.cursor--
 		}
+		return m, nil
+	case tea.KeyRight:
+		if m.input.cursor < len([]rune(m.input.value)) {
+			m.input.cursor++
+		}
+		return m, nil
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.input.cursor = 0
+		return m, nil
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.input.cursor = len([]rune(m.input.value))
+		return m, nil
+	case tea.KeyBackspace:
+		m.input.value, m.input.cursor = runeDeleteBefore(m.input.value, m.input.cursor)
 		m.input.acPrefix = "" // editing restarts autocomplete
 		return m, nil
+	case tea.KeyDelete:
+		m.input.value, m.input.cursor = runeDeleteAt(m.input.value, m.input.cursor)
+		m.input.acPrefix = ""
+		return m, nil
 	case tea.KeyRunes, tea.KeySpace:
-		m.input.value += string(msg.Runes)
+		m.input.value, m.input.cursor = runeInsert(m.input.value, m.input.cursor, string(msg.Runes))
 		m.input.acPrefix = ""
 		return m, nil
 	}
