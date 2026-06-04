@@ -9,7 +9,7 @@
 #   Events:     start | pause | resume | complete | defer | log | amend | move | cancel
 #
 # Layout:
-#   ~/.config/wj/config                  settings   (override: $WJ_CONFIG)
+#   ~/.config/wj/cfg                     settings   (INI; override: $WJ_CONFIG)
 #   ~/.local/share/wj/YYYY/MM/DD.tsv     event log  (override: $WJ_DATA_DIR)
 #   ~/.local/share/wj/exports/           generated on demand
 #
@@ -34,7 +34,10 @@ interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui
 auto_pause="off"        # on | off — on start/resume, auto-pause a running task in
                         # the SAME project. off = run them in parallel (default)
 accent="141"            # wj-tui border/header color: 256-color code, #hex, or name
-layout="balanced"       # wj-tui panel layout: balanced | spotlight | golden (⇧L cycles)
+layout="balanced"       # wj-tui panel layout: balanced | spotlight | golden | custom (⇧L cycles)
+sidebar="left"          # wj-tui sidebar side: left | right
+layout_sidebar=""       # custom layout: sidebar width %, e.g. 28 (empty = preset's)
+layout_split=""         # custom layout: panel weights focused,hi,lo, e.g. 60,25,15
 # wj-tui per-panel title colors (each its own, so the panels stay distinct):
 color_projects="39"     # blue
 color_tasks="214"       # amber
@@ -48,7 +51,7 @@ color_timeline="180"    # tan
 # ---------------------------------------------------------------------------
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-WJ_CONFIG="${WJ_CONFIG:-$CONFIG_HOME/wj/config}"
+WJ_CONFIG="${WJ_CONFIG:-$CONFIG_HOME/wj/cfg}"
 WJ_DATA_DIR="${WJ_DATA_DIR:-$DATA_HOME/wj}"
 
 # ---------------------------------------------------------------------------
@@ -63,67 +66,111 @@ self_path() {
     readlink -f -- "$s" 2>/dev/null || printf '%s' "$s"
 }
 
+# every recognised key (a whitelist: the parser ignores anything else, so a
+# config file can neither inject arbitrary shell variables nor run commands —
+# unlike the old `source`-the-file approach).
+_CFG_KEYS=" shift_start shift_end slot_minutes round totals default_project \
+auto_pause interface accent layout sidebar layout_sidebar layout_split \
+color_projects color_tasks color_pending color_range color_day color_timeline "
+
 seed_config() {
     mkdir -p "$(dirname "$WJ_CONFIG")"
+    # NB: shift_start/shift_end use ${var:-default} so a fresh config gets the
+    # friendly 09:00–19:00, while a migration preserves whatever was set.
     cat >"$WJ_CONFIG" <<EOF
-# wj configuration — key=value, shell-sourced (quote values with spaces)
+# wj configuration — INI style: [section] headers, then "key = value".
+# '#' starts a comment (a leading-'#' value like a hex color is preserved);
+# blank lines are ignored. This file is parsed, not executed.
 
-# Working-day bounds for the grid/gantt axis.
-# Comment these out (or leave them empty) to drop the fixed 09:00–19:00 frame:
-# the grid then auto-fits to each day's actual tracked hours instead.
-shift_start=09:00
-shift_end=19:00
+[tracking]
+# Working-day bounds for the grid/gantt axis. Comment these out (or leave them
+# empty) to drop the fixed frame: the grid then auto-fits to each day's hours.
+shift_start = ${shift_start:-09:00}
+shift_end   = ${shift_end:-19:00}
+# Grid slot size in minutes (the "jump"), how event times snap, how totals sum.
+slot_minutes = $slot_minutes
+round        = $round           # down | nearest
+totals       = $totals          # exact | slot
+# On start/resume, auto-pause another running task in the SAME project.
+auto_pause = $auto_pause        # on | off  (override: --parallel / --auto-pause)
+# Project used outside a git repo when no --project is given.
+default_project = $default_project
 
-# The time "jump" between grid slots, in minutes
-slot_minutes=$slot_minutes
+[ui]
+# Front-end for bare \`wj\`: minimal (today's status table) | ui (the wj-tui app).
+interface = $interface
+# wj-tui focused-panel border/header color: 256-code (141), #hex, or name.
+accent = $accent
+# Panel layout: balanced | spotlight | golden | custom. ⇧L cycles, z zooms.
+layout = $layout
+# Which side the lists column sits on: left | right.
+sidebar = $sidebar
+# Optional 'custom' layout proportions (then set layout = custom):
+layout_sidebar = $layout_sidebar   # sidebar width %, e.g. 28
+layout_split   = $layout_split     # focused,hi,lo weights, e.g. 60,25,15
 
-# Grid snapping: down | nearest
-round=$round
-
-# How time totals are summed: exact | slot
-totals=$totals
-
-# Project used outside a git repo when no --project is given
-default_project=$default_project
-
-# Front-end for bare \`wj\` and \`wj ui\`: minimal | ui
-# minimal -> today's status table (the classic behaviour)
-# ui      -> launch the wj-tui binary if installed, else fall back to minimal
-interface=$interface
-
-# Auto-pause on start/resume: on | off
-# on  -> starting/resuming a task pauses any other running task in the SAME project
-#        (one in-progress task per project)
-# off -> leave the other task running, so you work on several in parallel (default)
-# Override per command with --parallel / --auto-pause.
-auto_pause=$auto_pause
-
-# Border/header color for the wj-tui front-end (the focused panel's border).
-# A 256-color code (e.g. 141), a hex value (#9d7cd8), or an ANSI name (purple).
-accent=$accent
-
-# Panel layout for the wj-tui front-end: balanced | spotlight | golden.
-# balanced  -> the focused panel takes ~half its column, the rest split evenly
-# spotlight -> the focused panel dominates; the others shrink to thin strips
-# golden    -> a wider sidebar and uneven (62/23/15) splits — less grid-like
-# ⇧L cycles them live in the TUI; this sets the startup default.
-layout=$layout
-
-# Per-panel title colors in wj-tui — each panel keeps its own so they stay
-# visually distinct. Same value formats as accent. Clear one to use the default.
-color_projects=$color_projects
-color_tasks=$color_tasks
-color_pending=$color_pending
-color_range=$color_range
-color_day=$color_day
-color_timeline=$color_timeline
+[colors]
+# wj-tui per-panel title colors — each its own. Same value formats as accent.
+color_projects = $color_projects
+color_tasks    = $color_tasks
+color_pending  = $color_pending
+color_range    = $color_range
+color_day      = $color_day
+color_timeline = $color_timeline
 EOF
 }
 
+# trim leading/trailing whitespace from $1
+_trim() { local s=$1; s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}; printf '%s' "$s"; }
+
+# parse_config reads an INI-ish file into the recognised config variables. It is
+# tolerant of the legacy flat "key=value" format (no [section] headers), so a
+# migrated config Just Works. Section headers are organizational only.
+parse_config() {
+    local file=$1 line key val
+    [[ -f $file ]] || return 0
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}                     # tolerate CRLF
+        case "$(_trim "$line")" in
+            ''|'#'*|'['*) continue ;;          # blank, comment, or [section]
+        esac
+        [[ $line == *=* ]] || continue
+        key=$(_trim "${line%%=*}")
+        [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # skip blank/junk keys
+        # An inline comment is a '#' followed by whitespace or end-of-line — so a
+        # leading-'#' value like a hex color (#9d7cd8) is kept, while "v # note"
+        # and an empty "key =  # note" are stripped. Work on the untrimmed value
+        # so the space after '=' doesn't masquerade as the pre-comment space.
+        val=${line#*=}
+        val=${val%%#[[:blank:]]*}              # cut "# comment"  (# then whitespace)
+        val=${val%[[:blank:]]#}                # cut a bare trailing " #"
+        val=$(_trim "$val")
+        case $val in                           # strip one matching pair of surrounding quotes
+            \"*\") val=${val#\"}; val=${val%\"} ;;   # (avoid ${v:1:-1}, a bash-4.2 feature)
+            \'*\') val=${val#\'}; val=${val%\'} ;;
+        esac
+        case " $_CFG_KEYS " in *" $key "*) printf -v "$key" '%s' "$val" ;; esac
+    done <"$file"
+}
+
+# migrate the legacy flat ~/.config/wj/config to the new sectioned cfg, once.
+# Triggered only when the target is named "cfg", doesn't yet exist, and a sibling
+# "config" does — so a custom $WJ_CONFIG path is never touched. Old values are
+# preserved (re-seeded into the new format) and the original kept as config.bak.
+migrate_legacy_config() {
+    [[ ${WJ_CONFIG##*/} == cfg && ! -e $WJ_CONFIG ]] || return 0
+    local legacy="${WJ_CONFIG%/*}/config"
+    [[ -f $legacy ]] || return 0
+    parse_config "$legacy"          # load the old values into the config vars
+    seed_config                     # write them back out in the sectioned format
+    mv "$legacy" "$legacy.bak" 2>/dev/null || true
+    printf 'wj: migrated %s -> %s (original kept as config.bak)\n' "$legacy" "$WJ_CONFIG" >&2
+}
+
 load_config() {
+    migrate_legacy_config
     [[ -f $WJ_CONFIG ]] || seed_config
-    # shellcheck disable=SC1090
-    source "$WJ_CONFIG"
+    parse_config "$WJ_CONFIG"
 }
 
 # HH:MM -> minutes since midnight
@@ -1492,7 +1539,7 @@ IDEMPOTENT STATE CHANGES
   a paused task (likewise resume on a running one, complete on a completed one,
   defer and cancel) appends no event and just prints e.g. "T1  already paused".
 
-CONFIG  (~/.config/wj/config — created on first run)
+CONFIG  (~/.config/wj/cfg — INI [sections], created on first run)
   shift_start / shift_end   default grid frame; comment out to auto-fit (09:00 / 19:00)
   slot_minutes              grid time-step, i.e. the "jump"           (5)
   round                     grid snapping: down | nearest             (down)
@@ -1502,6 +1549,9 @@ CONFIG  (~/.config/wj/config — created on first run)
   auto_pause                start/resume auto-pause same project     (off)
   accent                    wj-tui focused-panel border color        (141)
   layout                    wj-tui panels: balanced|spotlight|golden (balanced)
+  sidebar                   wj-tui sidebar side: left | right        (left)
+  layout_sidebar            custom layout sidebar width %, e.g. 28    ()
+  layout_split              custom layout weights focused,hi,lo      ()
   color_projects            per-panel title colors in wj-tui — one   (39)
   color_tasks               per panel; same value formats as accent  (214)
   color_pending             (a 256-color code, #hex, or ANSI name)   (170)
@@ -1541,7 +1591,7 @@ EXAMPLES
   echo 'eval "$(wj completion bash)"' >> ~/.bashrc   # or: completion zsh -> ~/.zshrc
 
 FILES
-  config :  ~/.config/wj/config          (override: $WJ_CONFIG)
+  config :  ~/.config/wj/cfg             (override: $WJ_CONFIG)
   data   :  ~/.local/share/wj/YYYY/MM/DD.tsv   (override: $WJ_DATA_DIR)
 EOF
 }
@@ -1573,6 +1623,9 @@ main() {
                 local -a uiargs=(-wj "$(self_path)")
                 [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
                 [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
+                [[ -n ${sidebar:-} ]] && uiargs+=(-sidebar "$sidebar")
+                [[ -n ${layout_sidebar:-} ]] && uiargs+=(-layout-sidebar "$layout_sidebar")
+                [[ -n ${layout_split:-} ]] && uiargs+=(-layout-split "$layout_split")
                 local cspec; cspec=$(ui_colorspec)
                 [[ -n $cspec ]] && uiargs+=(-colors "$cspec")
                 exec wj-tui "${uiargs[@]}"
@@ -1589,6 +1642,9 @@ main() {
             [[ -n $BY ]]   && uiargs+=(-by "$BY")
             [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
             [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
+            [[ -n ${sidebar:-} ]] && uiargs+=(-sidebar "$sidebar")
+            [[ -n ${layout_sidebar:-} ]] && uiargs+=(-layout-sidebar "$layout_sidebar")
+            [[ -n ${layout_split:-} ]] && uiargs+=(-layout-split "$layout_split")
             local cspec; cspec=$(ui_colorspec)
             [[ -n $cspec ]] && uiargs+=(-colors "$cspec")
             exec wj-tui "${uiargs[@]}" ;;
@@ -1616,7 +1672,7 @@ main() {
         report)   cmd_report ;;
         export)   cmd_export ;;
         completion) cmd_completion ;;
-        config)   printf '%s\n' "$WJ_CONFIG" ;;
+        config|cfg) printf '%s\n' "$WJ_CONFIG" ;;
         _tasks)   list_task_ids ;;
         _pending) list_pending_ids ;;
         _projects) list_projects ;;

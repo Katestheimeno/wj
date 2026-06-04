@@ -159,11 +159,19 @@ type Model struct {
 	tlOffset  int        // timeline scroll position
 	autoPause bool       // when true, start/resume pause the project's other running task
 	layout    int        // index into layouts (panel arrangement); cycled with Shift+L
+	zoomed    bool       // when true, the focused pane fills the screen (toggled with z)
 }
 
 // activeLayout is the current panel-arrangement profile (clamped defensively).
+// Fallback-only auto-switch: on a terminal too small for an asymmetric layout to
+// render well, it drops back to balanced so no panel gets crushed; the chosen
+// layout still wins at normal sizes.
 func (m Model) activeLayout() layoutProfile {
-	return layouts[clamp(m.layout, 0, len(layouts)-1)]
+	lp := layouts[clamp(m.layout, 0, len(layouts)-1)]
+	if lp.name != "balanced" && ((m.height > 0 && m.height < 18) || (m.width > 0 && m.width < 64)) {
+		return layouts[0] // balanced
+	}
+	return lp
 }
 
 // New builds the initial model. from/to may be empty to use the CLI default

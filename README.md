@@ -147,7 +147,7 @@ chmod +x wj
 ln -s "$PWD/wj" ~/.local/bin/wj          # or: sudo ln -s "$PWD/wj" /usr/local/bin/wj
 ```
 
-First run seeds a config file at `~/.config/wj/config`. Data is written under
+First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 `~/.local/share/wj/`. Both locations are overridable (see [Configuration](#configuration)).
 
 ## Commands
@@ -263,7 +263,12 @@ slot-aligned for display, independent of how totals are summed.
 
 ## Configuration
 
-`~/.config/wj/config` (seeded on first run; `key=value`, shell-sourced):
+`~/.config/wj/cfg` (seeded on first run). It's a small INI file — `[section]`
+headers with `key = value` lines underneath — parsed (not executed), grouped
+into `[tracking]`, `[ui]`, and `[colors]`. `#` starts a comment (a leading-`#`
+value like a hex color is kept). A legacy `~/.config/wj/config` from an older
+version is migrated to `cfg` automatically on first run (the original is kept as
+`config.bak`).
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -275,12 +280,14 @@ slot-aligned for display, independent of how totals are summed.
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 | `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
 | `accent` | `141` | `wj-tui`'s border/header color — the focused panel's border. A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
-| `layout` | `balanced` | `wj-tui`'s panel layout: `balanced`, `spotlight` (focused panel dominates), or `golden` (wider sidebar, uneven splits). Shift+L cycles them live. |
+| `layout` | `balanced` | `wj-tui`'s panel layout: `balanced`, `spotlight` (focused panel dominates), `golden` (wider sidebar, uneven splits), or `custom` (see below). Shift+L cycles them live; on a too-small terminal it auto-falls back to `balanced`. |
+| `sidebar` | `left` | Which side the `wj-tui` lists column sits on: `left` or `right`. |
+| `layout_sidebar` / `layout_split` | — | Define a `custom` layout: `layout_sidebar` is the sidebar width percent (e.g. `28`); `layout_split` is the panel weights `focused,hi,lo` (e.g. `60,25,15` — the focused panel gets 60% of its column, the other two split the rest 25:15). Select with `layout=custom`. |
 | `color_projects` / `color_tasks` / `color_pending` / `color_range` / `color_day` / `color_timeline` | `39` / `214` / `170` / `78` / `45` / `180` | `wj-tui`'s per-panel title colors — each panel keeps its own so they stay visually distinct. Same value formats as `accent`. |
 
 Environment overrides:
 
-- `WJ_CONFIG` — path to the config file (default `$XDG_CONFIG_HOME/wj/config`).
+- `WJ_CONFIG` — path to the config file (default `$XDG_CONFIG_HOME/wj/cfg`).
 - `WJ_DATA_DIR` — root of the data tree (default `$XDG_DATA_HOME/wj`, i.e. `~/.local/share/wj`).
 
 `XDG_CONFIG_HOME` / `XDG_DATA_HOME` are honored as the base for those defaults.
@@ -288,7 +295,7 @@ Environment overrides:
 ## Data layout
 
 ```
-~/.config/wj/config                  # settings
+~/.config/wj/cfg                     # settings (INI: [tracking] [ui] [colors])
 ~/.local/share/wj/
 └── 2026/06/01.tsv                    # one append-only event log per day
 ```
@@ -363,9 +370,15 @@ takes a 256-color code, a hex value (`#9d7cd8`), or an ANSI name.
 
 The panel **layout** is configurable too: `balanced` (the default — the focused
 panel takes ~half its column), `spotlight` (the focused panel dominates, the rest
-shrink to thin strips), or `golden` (a wider sidebar and uneven 62/23/15 splits).
-Set the startup default with `layout=` in the config, or press **Shift+L** to
-cycle them live.
+shrink to thin strips but never below a readable minimum), or `golden` (a wider
+sidebar and uneven 62/23/15 splits). Set the startup default with `layout=` in
+the config, or press **Shift+L** to cycle them live; on a terminal too small for
+the chosen layout it quietly falls back to `balanced` so nothing gets crushed.
+Define your own proportions with `layout_sidebar` / `layout_split` (a `custom`
+layout), put the lists on the right with `sidebar=right`, and press **`z`** to
+zoom the focused panel to full-screen (Esc or `z` again to return — navigation
+still works while zoomed, so the view follows your focus). An empty **Pending**
+backlog collapses to a slim strip so its space goes to the other lists.
 
 Every action echoes the CLI's confirmation in the footer — a cyan `✓` line such
 as `✓ T1 12:30 completed — 1h30m`, or, for an [idempotent](#commands) no-op,

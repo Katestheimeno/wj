@@ -5,6 +5,7 @@ import (
 	"github.com/Katestheimeno/wj/tui/internal/wj"
 	"github.com/charmbracelet/lipgloss"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,19 +50,27 @@ func (m Model) View() string {
 		}
 	}
 
-	sideW := clamp(w*m.activeLayout().sidePct/100, 18, 40)
-	if sideW > w-24 {
-		sideW = w - 24
+	var body string
+	if m.zoomed {
+		// maximize the focused pane's content to the full body area
+		body = m.renderZoom(w, bodyH, fill)
+	} else {
+		sideW := clamp(w*m.activeLayout().sidePct/100, 18, 40)
+		if sideW > w-24 {
+			sideW = w - 24
+		}
+		if sideW < 12 {
+			sideW = 12
+		}
+		mainW := w - sideW
+		sb := m.renderSidebar(sideW, bodyH, fill)
+		mn := m.renderMain(mainW, bodyH, fill)
+		if sidebarRight {
+			body = lipgloss.JoinHorizontal(lipgloss.Top, mn, sb)
+		} else {
+			body = lipgloss.JoinHorizontal(lipgloss.Top, sb, mn)
+		}
 	}
-	if sideW < 12 {
-		sideW = 12
-	}
-	mainW := w - sideW
-
-	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.renderSidebar(sideW, bodyH, fill),
-		m.renderMain(mainW, bodyH, fill),
-	)
 
 	parts := []string{header, body}
 	if legend != "" {
@@ -211,6 +220,16 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 		fi = 2
 	}
 	hs := m.activeLayout().sidebarSplit(h, fi)
+	// auto-hide an empty backlog: collapse Pending to a slim title strip and give
+	// the reclaimed rows to Projects/Tasks (it stays focusable, so nav is intact).
+	if len(m.pending) == 0 {
+		if slim := 3; hs[2] > slim {
+			extra := hs[2] - slim
+			hs[2] = slim
+			hs[0] += extra / 2
+			hs[1] += extra - extra/2
+		}
+	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		panel("Projects", colorProjects, m.renderProjects(cw, hs[0]-3), m.pane == paneRange, w, hs[0]),
 		panel(taskTitle, colorTasks, m.renderTasks(cw, hs[1]-3), m.pane == paneDay, w, hs[1]),
@@ -308,6 +327,39 @@ func (m Model) renderMain(w, h int, fill bool) string {
 	)
 }
 
+// renderZoom draws a single panel filling the whole body area — the focused
+// pane's main content (Range/Day/Timeline), or the Pending backlog when that
+// pane has focus. Navigation still works while zoomed, so the view follows
+// focus; z (or Esc) returns to the split layout.
+func (m Model) renderZoom(w, h int, fill bool) string {
+	innerW := w - 4
+	if innerW < 8 {
+		innerW = 8
+	}
+	ph, body := 0, 1<<30 // !fill: content-sized, unbounded rows
+	if fill {
+		ph, body = h, h-3 // panel height h; content = minus border(2)+title(1)
+	}
+	switch m.pane {
+	case paneRange:
+		return panel("Range", colorRange, m.rangeBody(innerW, body), true, w, ph)
+	case paneDay:
+		return panel("Day — "+m.currentDay(), colorDay, m.renderDay(innerW, body), true, w, ph)
+	case panePending:
+		title := "Pending"
+		if n := len(m.pending); n > 0 {
+			title = fmt.Sprintf("Pending (%d)", n)
+		}
+		return panel(title, colorPending, m.renderPending(innerW, body, true), true, w, ph)
+	default: // timeline
+		title := "Timeline"
+		if m.show != nil {
+			title = "Timeline · " + m.show.ID
+		}
+		return panel(title, colorTimeline, m.renderTimeline(body), true, w, ph)
+	}
+}
+
 // rangeBody renders the Range gantt, or a placeholder when the range is empty.
 func (m Model) rangeBody(innerW, maxBody int) string {
 	if m.g != nil && len(m.g.Rows) == 0 {
@@ -345,11 +397,54 @@ func layoutIndex(name string) int {
 	return -1
 }
 
-// SetLayout selects the startup layout by name (balanced | spotlight | golden).
-// An unknown or empty name keeps the default (balanced). Call once at startup.
+// SetLayout selects the startup layout by name (balanced | spotlight | golden |
+// custom). An unknown or empty name keeps the default (balanced). Call once at
+// startup — after SetLayoutRatios, so a configured "custom" profile exists.
 func SetLayout(name string) {
 	if i := layoutIndex(strings.TrimSpace(name)); i >= 0 {
 		defaultLayout = i
+	}
+}
+
+// sidebarRight puts the lists column on the right (default: left). Set from the
+// config's sidebar= via SetSidebar.
+var sidebarRight = false
+
+// SetSidebar places the sidebar on the "left" (default) or "right". Any other
+// value (incl. empty) is ignored. Call once at startup.
+func SetSidebar(side string) {
+	if strings.TrimSpace(side) == "right" {
+		sidebarRight = true
+	}
+}
+
+// SetLayoutRatios registers a "custom" layout from config overrides, so named
+// presets stay pure: sidebar is the sidebar width percent ("28"), and split is
+// the three panel weights "focused,hi,lo" ("60,25,15" → focused 60% of the
+// column, the other two splitting the rest 25:15). Either may be empty to keep
+// balanced's value. With both empty, no custom layout is added. Call once at
+// startup, before SetLayout.
+func SetLayoutRatios(sidebar, split string) {
+	sidebar, split = strings.TrimSpace(sidebar), strings.TrimSpace(split)
+	if sidebar == "" && split == "" {
+		return
+	}
+	lp := layouts[0] // start from balanced
+	lp.name = "custom"
+	if n, err := strconv.Atoi(sidebar); err == nil && n >= 5 && n <= 60 {
+		lp.sidePct = n
+	}
+	if parts := strings.Split(split, ","); len(parts) == 3 {
+		f, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+		hi, e2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+		lo, e3 := strconv.Atoi(strings.TrimSpace(parts[2]))
+		if e1 == nil && e2 == nil && e3 == nil && f > 0 && hi > 0 && lo > 0 {
+			lp.focusNum, lp.focusDen = f, f+hi+lo
+			lp.restHi, lp.restLo = hi, lo
+		}
+	}
+	if layoutIndex("custom") < 0 {
+		layouts = append(layouts, lp)
 	}
 }
 
@@ -376,6 +471,19 @@ func (lp layoutProfile) split(h, focused int) [3]int {
 		}
 		out[i] = sizes[j]
 		j++
+	}
+	// keep the non-focused panels readable: never shrink one below minPanel rows
+	// (mostly rescues spotlight's thin strips), borrowing from the focused panel
+	// as long as it can spare the rows. h<12 already short-circuited above.
+	const minPanel = 4
+	for i := 0; i < 3; i++ {
+		if i == focused || out[i] >= minPanel {
+			continue
+		}
+		if deficit := minPanel - out[i]; out[focused]-deficit >= minPanel {
+			out[focused] -= deficit
+			out[i] = minPanel
+		}
 	}
 	return out
 }
@@ -421,15 +529,18 @@ func (m Model) pauseBadge() string {
 // footerLine is a short, context-sensitive hint that fits on one line; the full
 // keymap lives in the ? overlay.
 func (m Model) footerLine() string {
+	if m.zoomed {
+		return "ZOOM · h/l/1-4 switch panel · z/esc unzoom · j/k move · / search · ? help · q quit"
+	}
 	switch m.pane {
 	case paneRange:
-		return "j/k project · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · b by · / search · s start · ? help · q quit"
+		return "j/k project · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · z zoom · b by · / search · s start · ? help"
 	case paneDay:
-		return "j/k task · h/l panel · 1-4 jump · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · / search · ? help"
+		return "j/k task · h/l panel · 1-4 jump · z zoom · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · / search · ?"
 	case panePending:
-		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h/l panel · 1-4 jump · ? help"
+		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h/l panel · z zoom · ? help"
 	default:
-		return "j/k scroll · ^d/^u page · h/l panel · 1-4 jump · / search · s start · ? help · q quit"
+		return "j/k scroll · ^d/^u page · h/l panel · 1-4 jump · z zoom · / search · s start · ? help · q quit"
 	}
 }
 
@@ -495,6 +606,7 @@ func (m Model) helpOverlay() string {
 		{"b", "toggle the Projects rows between project and task"},
 		{"", "selecting a project filters the day's Tasks"},
 		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden"},
+		{"z", "zoom: maximize the focused panel full-screen (esc/z to exit)"},
 		{"Ctrl+R", "reload everything from disk"},
 		{"~Pending (backlog panel)", ""},
 		{"a", "add: 'desc @project !YYYY-MM-DD' (project/due optional)"},

@@ -192,9 +192,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right":
 		return m.stepDay(+1)
 	case "esc":
-		if m.pane != paneRange {
+		if m.zoomed { // esc leaves zoom first, before unwinding the pane focus
+			m.zoomed = false
+		} else if m.pane != paneRange {
 			m.pane = paneRange
 		}
+		return m, nil
+	case "z":
+		// maximize the focused pane to full-screen (toggle); navigation still
+		// works while zoomed, so the view follows focus.
+		m.zoomed = !m.zoomed
 		return m, nil
 	case "tab", "l":
 		// l (drill-in) and Tab both advance one panel, wrapping past the last

@@ -219,8 +219,16 @@ forces the opposite for a single command. Different projects always run at once,
 each its own grid column.
 .SH CONFIGURATION
 Config lives at
+.I ~/.config/wj/cfg
+(seeded on first run): a small INI file with
+.RB [ tracking ], " [" ui ] " and " [ colors ]
+sections of
+.I key = value
+lines, parsed (not executed). A legacy
 .I ~/.config/wj/config
-(seeded on first run; key=value, shell-sourced). Keys:
+from an older version is migrated automatically (kept as
+.IR config.bak ).
+Keys:
 .IR shift_start ", " shift_end " (default grid frame; comment out to auto-fit the grid to each day), "
 .I slot_minutes
 (grid step),
@@ -238,15 +246,21 @@ default off),
 .I accent
 (the wj-tui border/header color \(em a 256-color code, #hex, or ANSI name; default 141, a purple),
 .I layout
-(the wj-tui panel arrangement \(em balanced|spotlight|golden, default balanced; Shift+L cycles them live),
+(the wj-tui panel arrangement \(em balanced|spotlight|golden|custom, default balanced; Shift+L cycles them live, z zooms the focused panel),
+.I sidebar
+(which side the wj-tui lists column sits on \(em left|right, default left),
+.IR layout_sidebar ", " layout_split
+(optional overrides defining a
+.I custom
+layout \(em the sidebar width percent and the panel weights focused,hi,lo, e.g. 28 and 60,25,15),
 and
 .IR color_projects ", " color_tasks ", " color_pending ", " color_range ", " color_day ", " color_timeline
 (the wj-tui per-panel title colors, one for each panel; same value formats as
 .IR accent ).
 .SH FILES
 .TP
-.I ~/.config/wj/config
-Settings (override with \fB$WJ_CONFIG\fR).
+.I ~/.config/wj/cfg
+Settings, INI format (override with \fB$WJ_CONFIG\fR).
 .TP
 .I ~/.local/share/wj/YYYY/MM/DD.tsv
 The append-only event log (override with \fB$WJ_DATA_DIR\fR).

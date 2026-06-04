@@ -1065,3 +1065,138 @@ func TestSetLayout(t *testing.T) {
 		t.Errorf("New should adopt defaultLayout, got %d want %d", got, want)
 	}
 }
+
+func TestSetSidebar(t *testing.T) {
+	orig := sidebarRight
+	defer func() { sidebarRight = orig }()
+	sidebarRight = false
+	SetSidebar("left")
+	if sidebarRight {
+		t.Error("'left' should keep the sidebar on the left")
+	}
+	SetSidebar("")
+	if sidebarRight {
+		t.Error("empty is a no-op")
+	}
+	SetSidebar("right")
+	if !sidebarRight {
+		t.Error("'right' should move the sidebar to the right")
+	}
+}
+
+func TestSetLayoutRatiosCustom(t *testing.T) {
+	orig := layouts
+	defer func() { layouts = orig }()
+	SetLayoutRatios("28", "60,25,15")
+	i := layoutIndex("custom")
+	if i < 0 {
+		t.Fatal("a custom layout should be registered from the ratios")
+	}
+	lp := layouts[i]
+	if lp.sidePct != 28 || lp.focusNum != 60 || lp.focusDen != 100 || lp.restHi != 25 || lp.restLo != 15 {
+		t.Errorf("custom profile parsed wrong: %+v", lp)
+	}
+	if s := lp.split(100, 0); s[0]+s[1]+s[2] != 100 {
+		t.Errorf("custom split should sum to 100, got %v", s)
+	}
+}
+
+func TestSpotlightMinHeight(t *testing.T) {
+	// spotlight on a shortish column would give thin strips; the floor keeps the
+	// non-focused panels at >= 4 rows, borrowing from the focused one.
+	sp := layouts[1].split(20, 1) // spotlight, focus index 1
+	if sp[0] < 4 || sp[2] < 4 {
+		t.Errorf("non-focused panels should be >= 4 rows: %v", sp)
+	}
+	if sp[0]+sp[1]+sp[2] != 20 {
+		t.Errorf("split should still sum to 20: %v", sp)
+	}
+	if sp[1] < sp[0] || sp[1] < sp[2] {
+		t.Errorf("focused panel should still be the largest: %v", sp)
+	}
+}
+
+func TestActiveLayoutFallback(t *testing.T) {
+	m := sampleModel()
+	m.layout = layoutIndex("spotlight")
+	m.width, m.height = 100, 40 // roomy: keep the chosen layout
+	if got := m.activeLayout().name; got != "spotlight" {
+		t.Errorf("roomy terminal should keep spotlight, got %s", got)
+	}
+	m.height = 14 // too short: fall back to balanced so nothing is crushed
+	if got := m.activeLayout().name; got != "balanced" {
+		t.Errorf("short terminal should fall back to balanced, got %s", got)
+	}
+	m.layout = 0 // balanced never falls back
+	m.height = 5
+	if got := m.activeLayout().name; got != "balanced" {
+		t.Errorf("balanced should stay balanced, got %s", got)
+	}
+}
+
+func TestZoomToggle(t *testing.T) {
+	m := sampleModel()
+	if m.zoomed {
+		t.Fatal("zoom should be off by default")
+	}
+	n, _ := m.handleKey(keyMsg("z"))
+	if m = n.(Model); !m.zoomed {
+		t.Fatal("z should enter zoom")
+	}
+	n, _ = m.handleKey(keyMsg("z"))
+	if m = n.(Model); m.zoomed {
+		t.Fatal("z should exit zoom")
+	}
+	// esc leaves zoom first, without also resetting the pane focus
+	m.zoomed = true
+	m.pane = paneTimeline
+	n, _ = m.handleKey(keyMsg("esc"))
+	m = n.(Model)
+	if m.zoomed {
+		t.Error("esc should exit zoom")
+	}
+	if m.pane != paneTimeline {
+		t.Error("the esc that exits zoom should not also reset the pane")
+	}
+}
+
+func TestZoomRendersSinglePanel(t *testing.T) {
+	m := drilled() // pane = paneDay, has grid data
+	m.ready, m.width, m.height = true, 80, 24
+	m.zoomed = true
+	out := m.View()
+	if !strings.Contains(out, "Day — ") {
+		t.Errorf("zoom on paneDay should show the Day panel:\n%s", out)
+	}
+	if strings.Contains(out, "Projects") {
+		t.Errorf("zoom should hide the other panels (found Projects):\n%s", out)
+	}
+}
+
+func TestSidebarSideRender(t *testing.T) {
+	orig := sidebarRight
+	defer func() { sidebarRight = orig }()
+	m := sampleModel()
+	m.ready, m.width, m.height = true, 100, 24
+	titleRow := func(s string) string {
+		for _, ln := range strings.Split(s, "\n") {
+			if strings.Contains(ln, "Projects") && strings.Contains(ln, "Range") {
+				return ln
+			}
+		}
+		return ""
+	}
+	sidebarRight = false
+	left := titleRow(m.View())
+	sidebarRight = true
+	right := titleRow(m.View())
+	if left == "" || right == "" {
+		t.Fatal("could not find the Projects/Range title row")
+	}
+	if strings.Index(left, "Projects") > strings.Index(left, "Range") {
+		t.Errorf("sidebar=left: Projects should come before Range")
+	}
+	if strings.Index(right, "Range") > strings.Index(right, "Projects") {
+		t.Errorf("sidebar=right: Range should come before Projects")
+	}
+}
