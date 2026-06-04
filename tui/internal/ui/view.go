@@ -197,7 +197,7 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			panel("Projects", colorProjects, m.renderProjects(cw, 1<<30), m.pane == paneRange, w, 0),
 			panel(taskTitle, colorTasks, m.renderTasks(cw, 1<<30), m.pane == paneDay, w, 0),
-			panel(pendTitle, colorPending, m.renderPending(cw, 1<<30), m.pane == panePending, w, 0),
+			panel(pendTitle, colorPending, m.renderPending(cw, 1<<30, m.pane == panePending), m.pane == panePending, w, 0),
 		)
 	}
 	// focused sidebar panel gets the most room (−1 = none focused → equal thirds)
@@ -214,7 +214,7 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	return lipgloss.JoinVertical(lipgloss.Left,
 		panel("Projects", colorProjects, m.renderProjects(cw, hs[0]-3), m.pane == paneRange, w, hs[0]),
 		panel(taskTitle, colorTasks, m.renderTasks(cw, hs[1]-3), m.pane == paneDay, w, hs[1]),
-		panel(pendTitle, colorPending, m.renderPending(cw, hs[2]-3), m.pane == panePending, w, hs[2]),
+		panel(pendTitle, colorPending, m.renderPending(cw, hs[2]-3, m.pane == panePending), m.pane == panePending, w, hs[2]),
 	)
 }
 
@@ -230,9 +230,14 @@ func sidebarSplit(h, focused int) [3]int {
 
 // renderPending lists the backlog: a deadline-urgency glyph + the description
 // (project-colored when set), with the due date right-aligned.
-func (m Model) renderPending(cw, maxRows int) string {
+func (m Model) renderPending(cw, maxRows int, active bool) string {
 	if len(m.pending) == 0 {
-		return dimStyle.Render("(empty — press a to add)")
+		// only surface the "press a to add" affordance when this panel is
+		// focused — a is a Pending-pane key, so the hint would mislead otherwise.
+		if active {
+			return dimStyle.Render("(empty — press a to add)")
+		}
+		return dimStyle.Render("(empty)")
 	}
 	items := make([]string, len(m.pending))
 	for i, p := range m.pending {
@@ -369,13 +374,13 @@ func (m Model) pauseBadge() string {
 func (m Model) footerLine() string {
 	switch m.pane {
 	case paneRange:
-		return "j/k project · l drill · ←→ day · [ ] window · 1/7/3 span · b by · / search · s start · A par/seq · ? help · q quit"
+		return "j/k project · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · b by · / search · s start · ? help · q quit"
 	case paneDay:
-		return "j/k task · l timeline · h back · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · / search · ? help"
+		return "j/k task · h/l panel · 1-4 jump · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · / search · ? help"
 	case panePending:
-		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h back · ? help"
+		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h/l panel · 1-4 jump · ? help"
 	default:
-		return "j/k scroll · ^d/^u page · h back · / search · s start · ? help · q quit"
+		return "j/k scroll · ^d/^u page · h/l panel · 1-4 jump · / search · s start · ? help · q quit"
 	}
 }
 
@@ -424,16 +429,18 @@ func (m Model) searchOverlay(w int) string {
 func (m Model) helpOverlay() string {
 	rows := [][2]string{
 		{"~Navigation", ""},
-		{"h / l", "drill out / in: Projects → Tasks → Timeline"},
+		{"h / l", "cycle panels (wraps): Projects → Tasks → Timeline → Pending"},
+		{"Tab / Shift+Tab", "cycle panels (same as l / h)"},
+		{"1 / 2 / 3 / 4", "jump straight to Projects / Tasks / Timeline / Pending"},
 		{"j / k", "move the selection in the focused panel"},
 		{"g / G", "jump to first / last"},
 		{"Ctrl+d / Ctrl+u", "half-page down / up"},
 		{"← / →", "previous / next day (from any panel)"},
-		{"Tab / Shift+Tab", "cycle panels: Projects → Tasks → Timeline → Pending"},
-		{"Enter", "drill in (alias for l) · Esc returns to Projects"},
+		{"Enter", "drill in (Projects→Tasks→Timeline) / start a pending task"},
+		{"Esc", "return to Projects"},
 		{"[ / ]", "shift the date window earlier / later"},
 		{"t", "jump to today / recenter the window"},
-		{"1 / 7 / 3", "set window span: 1 / 7 / 30 days"},
+		{"⇧1 / ⇧2 / ⇧3", "set window span: 1 / 7 / 30 days"},
 		{"~View", ""},
 		{"/", "search all tasks (id / project / description); Enter jumps"},
 		{"b", "toggle the Projects rows between project and task"},

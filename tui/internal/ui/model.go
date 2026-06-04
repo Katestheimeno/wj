@@ -3,7 +3,8 @@
 // a wide main column of visualizations (the range Gantt, the focused day's
 // intraday Gantt, and the selected task's Timeline). Selecting a project in the
 // sidebar filters the day detail (master→detail). Navigation is vim-style:
-// j/k move within a panel, l/h drill in/out, ←/→ step days.
+// j/k move within a panel, h/l (and Tab/Shift+Tab) cycle the panels with
+// wraparound, 1-4 jump straight to a panel, ←/→ step days.
 package ui
 
 import (

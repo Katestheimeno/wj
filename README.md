@@ -302,9 +302,10 @@ stays the single source of truth, and the UI can never disagree with it.
 The layout fills the whole terminal: a narrow **sidebar** of lists drives a wide
 **main** column of detail. The header shows the running task with a live clock
 plus a today rollup (`>1 =0 x4 · Σ2h39m`); `?` opens a full keybinding overlay.
-Navigation is vim-style — `j`/`k` move within the focused panel, `l`/`h` drill
-in/out, `←`/`→` step days, `g`/`G` jump to first/last, `Ctrl-d`/`Ctrl-u`
-half-page — and `Tab` cycles every panel.
+Navigation is vim-style — `j`/`k` move within the focused panel, `h`/`l` (like
+`Shift-Tab`/`Tab`) cycle every panel with wraparound, `1`-`4` jump straight to
+Projects/Tasks/Timeline/Pending, `←`/`→` step days, `g`/`G` jump to first/last,
+`Ctrl-d`/`Ctrl-u` half-page. `Enter` drills in (and promotes a pending task).
 
 ![The `?` overlay — the full keybinding reference, grouped by panel](assets/asset_help.png)
 
@@ -312,8 +313,8 @@ Sidebar:
 
 - **Projects** — every project (or task) in range with its total. Selecting one
   filters the day's Tasks to it (master→detail); the project running right now
-  is flagged `>`. `[`/`]` shift the window, `t` jumps to today, `1`/`7`/`3` set
-  the span (1/7/30 days), `b` toggles project/task rows.
+  is flagged `>`. `[`/`]` shift the window, `t` jumps to today, `⇧1`/`⇧2`/`⇧3`
+  set the span (1/7/30 days), `b` toggles project/task rows.
 - **Tasks** — the focused day's tasks, each led by a status glyph: `>` running,
   `=` paused, `»` deferred, `x` done.
 - **Pending** — the [backlog](#pending-backlog): `a` add (`desc @project

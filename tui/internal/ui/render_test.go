@@ -244,10 +244,43 @@ func TestPaneCycle(t *testing.T) {
 	if m = step(m, "tab"); m.pane != paneRange {
 		t.Fatalf("tab wraps -> %d, want paneRange", m.pane)
 	}
+	// l cycles forward like Tab, wrapping past Pending back to Projects
+	for _, want := range []pane{paneDay, paneTimeline, panePending, paneRange} {
+		if m = step(m, "l"); m.pane != want {
+			t.Fatalf("l -> %d, want %d", m.pane, want)
+		}
+	}
+	// h cycles backward, wrapping Projects back to Pending
+	for _, want := range []pane{panePending, paneTimeline, paneDay, paneRange} {
+		if m = step(m, "h"); m.pane != want {
+			t.Fatalf("h -> %d, want %d", m.pane, want)
+		}
+	}
+	// 1-4 jump straight to a panel from anywhere
+	for key, want := range map[string]pane{"1": paneRange, "2": paneDay, "3": paneTimeline, "4": panePending} {
+		m.pane = paneTimeline // start somewhere unrelated each time
+		if m = step(m, key); m.pane != want {
+			t.Fatalf("%q -> %d, want %d", key, m.pane, want)
+		}
+	}
 	// esc from a non-range pane returns to range
 	m.pane = paneTimeline
 	if m = step(m, "esc"); m.pane != paneRange {
 		t.Fatalf("esc -> %d, want paneRange", m.pane)
+	}
+}
+
+func TestPendingEmptyHintFocusAware(t *testing.T) {
+	m := sampleModel() // no pending items
+	// unfocused: bare "(empty)", no misleading key affordance
+	m.pane = paneRange
+	if out := m.renderPending(40, 1<<30, m.pane == panePending); !strings.Contains(out, "(empty)") || strings.Contains(out, "press a") {
+		t.Errorf("unfocused pending hint = %q, want bare (empty)", out)
+	}
+	// focused: spell out the add affordance
+	m.pane = panePending
+	if out := m.renderPending(40, 1<<30, m.pane == panePending); !strings.Contains(out, "press a to add") {
+		t.Errorf("focused pending hint = %q, want the add affordance", out)
 	}
 }
 
@@ -618,18 +651,24 @@ func TestHelpOverlayToggle(t *testing.T) {
 func TestRangeSpanPresets(t *testing.T) {
 	m := sampleModel()
 	m.today = "2026-06-01"
-	// "1" => single-day window ending today
-	n, cmd := mustModel(m.handleKey(keyMsg("1")))
+	// ⇧1 ("!") => single-day window ending today
+	n, cmd := mustModel(m.handleKey(keyMsg("!")))
 	if n.from != "2026-06-01" || n.to != "2026-06-01" {
 		t.Errorf("span 1: from=%q to=%q", n.from, n.to)
 	}
 	if cmd == nil {
 		t.Error("span change should reload")
 	}
-	// "7" => last 7 days
-	n, _ = mustModel(m.handleKey(keyMsg("7")))
+	// ⇧2 ("@") => last 7 days
+	n, _ = mustModel(m.handleKey(keyMsg("@")))
 	if n.from != "2026-05-26" || n.to != "2026-06-01" {
 		t.Errorf("span 7: from=%q to=%q", n.from, n.to)
+	}
+	// a bare digit no longer sets the span — it jumps panels, leaving the
+	// window exactly as it was
+	n, _ = mustModel(m.handleKey(keyMsg("1")))
+	if n.from != m.from || n.to != m.to {
+		t.Errorf("bare digit must not change the span: from=%q to=%q (was %q..%q)", n.from, n.to, m.from, m.to)
 	}
 }
 

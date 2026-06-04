@@ -196,11 +196,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pane = paneRange
 		}
 		return m, nil
-	case "tab":
+	case "tab", "l":
+		// l (drill-in) and Tab both advance one panel, wrapping past the last
+		// back to the first — so the cycle now includes Pending.
 		m.pane = (m.pane + 1) % paneCount
 		return m, nil
-	case "shift+tab":
+	case "shift+tab", "h":
+		// h (drill-out) and Shift+Tab step back one panel, wrapping the first
+		// back to the last.
 		m.pane = (m.pane + paneCount - 1) % paneCount
+		return m, nil
+	case "1": // jump straight to a panel (works from any pane)
+		m.pane = paneRange
+		return m, nil
+	case "2":
+		m.pane = paneDay
+		return m, nil
+	case "3":
+		m.pane = paneTimeline
+		return m, nil
+	case "4":
+		m.pane = panePending
 		return m, nil
 	case "s":
 		// start a new task — global. Description plus an optional inline
@@ -260,8 +276,6 @@ func (m Model) keyPending(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if n > 0 {
 			m.selPend = n - 1
 		}
-	case "h":
-		m.pane = paneRange
 	case "enter": // promote the selected backlog item into a tracked task
 		if id := m.selectedPendID(); id != "" {
 			return m, m.mutate("start", id)
@@ -342,8 +356,6 @@ func (m Model) keyTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tlOffset = clamp(m.tlOffset+m.pageStep(), 0, max2(0, n-1))
 	case "ctrl+u":
 		m.tlOffset = clamp(m.tlOffset-m.pageStep(), 0, max2(0, n-1))
-	case "h":
-		m.pane = paneDay
 	}
 	return m, nil
 }
@@ -729,7 +741,7 @@ func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+u":
 		m.focusedRow = clamp(m.focusedRow-m.pageStep(), 0, rows)
 		return m.afterProjectChange()
-	case "l", "enter":
+	case "enter":
 		m.pane = paneDay
 	case "[":
 		return m.shiftRange(-1)
@@ -752,11 +764,13 @@ func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.setSpan(7)
-	case "1":
+	// span presets moved off the bare digits (now panel-jump keys) onto their
+	// shifted variants: ⇧1 / ⇧2 / ⇧3 → 1- / 7- / 30-day window.
+	case "!":
 		return m.setSpan(1)
-	case "7":
+	case "@":
 		return m.setSpan(7)
-	case "3":
+	case "#":
 		return m.setSpan(30)
 	}
 	return m, nil
@@ -805,9 +819,7 @@ func (m Model) keyDay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+u":
 		m.selTask = clamp(m.selTask-m.pageStep(), 0, n-1)
 		return m, m.loadShow(m.selectedTaskID(), m.currentDay())
-	case "h":
-		m.pane = paneRange
-	case "l", "enter":
+	case "enter":
 		m.pane = paneTimeline
 	}
 	return m, nil
