@@ -34,6 +34,7 @@ interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui
 auto_pause="off"        # on | off — on start/resume, auto-pause a running task in
                         # the SAME project. off = run them in parallel (default)
 accent="141"            # wj-tui border/header color: 256-color code, #hex, or name
+layout="balanced"       # wj-tui panel layout: balanced | spotlight | golden (⇧L cycles)
 # wj-tui per-panel title colors (each its own, so the panels stay distinct):
 color_projects="39"     # blue
 color_tasks="214"       # amber
@@ -100,6 +101,13 @@ auto_pause=$auto_pause
 # Border/header color for the wj-tui front-end (the focused panel's border).
 # A 256-color code (e.g. 141), a hex value (#9d7cd8), or an ANSI name (purple).
 accent=$accent
+
+# Panel layout for the wj-tui front-end: balanced | spotlight | golden.
+# balanced  -> the focused panel takes ~half its column, the rest split evenly
+# spotlight -> the focused panel dominates; the others shrink to thin strips
+# golden    -> a wider sidebar and uneven (62/23/15) splits — less grid-like
+# ⇧L cycles them live in the TUI; this sets the startup default.
+layout=$layout
 
 # Per-panel title colors in wj-tui — each panel keeps its own so they stay
 # visually distinct. Same value formats as accent. Clear one to use the default.
@@ -1493,6 +1501,7 @@ CONFIG  (~/.config/wj/config — created on first run)
   interface                 bare-wj front-end: minimal | ui          (minimal)
   auto_pause                start/resume auto-pause same project     (off)
   accent                    wj-tui focused-panel border color        (141)
+  layout                    wj-tui panels: balanced|spotlight|golden (balanced)
   color_projects            per-panel title colors in wj-tui — one   (39)
   color_tasks               per panel; same value formats as accent  (214)
   color_pending             (a 256-color code, #hex, or ANSI name)   (170)
@@ -1563,6 +1572,7 @@ main() {
             if [[ $interface == ui ]] && command -v wj-tui >/dev/null 2>&1; then
                 local -a uiargs=(-wj "$(self_path)")
                 [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
+                [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
                 local cspec; cspec=$(ui_colorspec)
                 [[ -n $cspec ]] && uiargs+=(-colors "$cspec")
                 exec wj-tui "${uiargs[@]}"
@@ -1578,6 +1588,7 @@ main() {
             [[ -n $TO ]]   && uiargs+=(-to "$TO")
             [[ -n $BY ]]   && uiargs+=(-by "$BY")
             [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
+            [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
             local cspec; cspec=$(ui_colorspec)
             [[ -n $cspec ]] && uiargs+=(-colors "$cspec")
             exec wj-tui "${uiargs[@]}" ;;

@@ -49,7 +49,7 @@ func (m Model) View() string {
 		}
 	}
 
-	sideW := clamp(w*24/100, 22, 32)
+	sideW := clamp(w*m.activeLayout().sidePct/100, 18, 40)
 	if sideW > w-24 {
 		sideW = w - 24
 	}
@@ -210,22 +210,12 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	case panePending:
 		fi = 2
 	}
-	hs := sidebarSplit(h, fi)
+	hs := m.activeLayout().sidebarSplit(h, fi)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		panel("Projects", colorProjects, m.renderProjects(cw, hs[0]-3), m.pane == paneRange, w, hs[0]),
 		panel(taskTitle, colorTasks, m.renderTasks(cw, hs[1]-3), m.pane == paneDay, w, hs[1]),
 		panel(pendTitle, colorPending, m.renderPending(cw, hs[2]-3, m.pane == panePending), m.pane == panePending, w, hs[2]),
 	)
-}
-
-// sidebarSplit divides the sidebar height among Projects/Tasks/Pending. The
-// focused panel (0/1/2) gets the most; focused == -1 splits into equal thirds.
-func sidebarSplit(h, focused int) [3]int {
-	if focused < 0 || h < 12 {
-		a := h / 3
-		return [3]int{a, a, h - 2*a}
-	}
-	return split3(h, focused)
 }
 
 // renderPending lists the backlog: a deadline-urgency glyph + the description
@@ -304,7 +294,13 @@ func (m Model) renderMain(w, h int, fill bool) string {
 			panel(tlTitle, colorTimeline, m.renderTimeline(1<<30), m.pane == paneTimeline, w, 0),
 		)
 	}
-	hs := split3(h, int(m.pane))
+	// the main column has 3 panels (Range/Day/Timeline); Pending (pane 3) lives
+	// only in the sidebar, so it maps onto the Timeline slot here.
+	mainFocus := int(m.pane)
+	if mainFocus > 2 {
+		mainFocus = 2
+	}
+	hs := m.activeLayout().split(h, mainFocus)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		panel("Range", colorRange, m.rangeBody(innerW, hs[0]-3), m.pane == paneRange, w, hs[0]),
 		panel(dayTitle, colorDay, m.renderDay(innerW, hs[1]-3), m.pane == paneDay, w, hs[1]),
@@ -320,25 +316,78 @@ func (m Model) rangeBody(innerW, maxBody int) string {
 	return m.renderRange(innerW, maxBody)
 }
 
-// split3 divides a column height among three stacked panels; the focused one
-// (by index) gets roughly half. The three always sum to h.
-func split3(h, focused int) [3]int {
-	if h < 12 {
+// layoutProfile parameterizes the panel arrangement: the sidebar width and how
+// each column's height is divided among its three stacked panels. The focused
+// panel gets focusNum/focusDen of the height; the remaining two split the rest
+// by the restHi:restLo weights (so a profile can make them uneven).
+type layoutProfile struct {
+	name               string
+	sidePct            int // sidebar width as a percent of the terminal width
+	focusNum, focusDen int // focused panel's share of its column height
+	restHi, restLo     int // weights for splitting the rest between the other two
+}
+
+// layouts are the switchable presets (cycled with Shift+L, default set via the
+// config's layout= / -layout). balanced is the original even-ish look.
+var layouts = []layoutProfile{
+	{"balanced", 24, 1, 2, 1, 1},   // focused ½, others ¼ each
+	{"spotlight", 22, 7, 10, 1, 1}, // focused dominates (~70%), others thin
+	{"golden", 32, 62, 100, 3, 2},  // wider sidebar, uneven 62 / 23 / 15
+}
+var defaultLayout = 0 // index into layouts; overridden by SetLayout at startup
+
+func layoutIndex(name string) int {
+	for i, lp := range layouts {
+		if lp.name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// SetLayout selects the startup layout by name (balanced | spotlight | golden).
+// An unknown or empty name keeps the default (balanced). Call once at startup.
+func SetLayout(name string) {
+	if i := layoutIndex(strings.TrimSpace(name)); i >= 0 {
+		defaultLayout = i
+	}
+}
+
+// split divides a column height among its three stacked panels; the focused one
+// (index 0/1/2) gets the profile's major share and the other two split the rest
+// by restHi:restLo (top-most of the two gets restHi). The three always sum to h.
+// A too-short column or an out-of-range focus falls back to equal thirds.
+func (lp layoutProfile) split(h, focused int) [3]int {
+	if h < 12 || focused < 0 || focused > 2 {
 		a := h / 3
 		return [3]int{a, a, h - 2*a}
 	}
-	f := h / 2
+	f := h * lp.focusNum / lp.focusDen
 	rest := h - f
-	a := rest / 2
-	b := rest - a
-	switch focused {
-	case 0:
-		return [3]int{f, a, b}
-	case 1:
-		return [3]int{a, f, b}
-	default:
-		return [3]int{a, b, f}
+	hi := rest * lp.restHi / (lp.restHi + lp.restLo)
+	lo := rest - hi
+	var out [3]int
+	out[focused] = f
+	sizes := [2]int{hi, lo}
+	j := 0
+	for i := 0; i < 3; i++ {
+		if i == focused {
+			continue
+		}
+		out[i] = sizes[j]
+		j++
 	}
+	return out
+}
+
+// sidebarSplit is split with a negative focus (no sidebar panel active, e.g. the
+// Timeline has focus) falling back to equal thirds.
+func (lp layoutProfile) sidebarSplit(h, focused int) [3]int {
+	if focused < 0 {
+		a := h / 3
+		return [3]int{a, a, h - 2*a}
+	}
+	return lp.split(h, focused)
 }
 
 // runningHeader shows the currently-running task with a live-ticking elapsed
@@ -445,6 +494,7 @@ func (m Model) helpOverlay() string {
 		{"/", "search all tasks (id / project / description); Enter jumps"},
 		{"b", "toggle the Projects rows between project and task"},
 		{"", "selecting a project filters the day's Tasks"},
+		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden"},
 		{"Ctrl+R", "reload everything from disk"},
 		{"~Pending (backlog panel)", ""},
 		{"a", "add: 'desc @project !YYYY-MM-DD' (project/due optional)"},

@@ -275,6 +275,7 @@ slot-aligned for display, independent of how totals are summed.
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 | `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
 | `accent` | `141` | `wj-tui`'s border/header color — the focused panel's border. A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
+| `layout` | `balanced` | `wj-tui`'s panel layout: `balanced`, `spotlight` (focused panel dominates), or `golden` (wider sidebar, uneven splits). Shift+L cycles them live. |
 | `color_projects` / `color_tasks` / `color_pending` / `color_range` / `color_day` / `color_timeline` | `39` / `214` / `170` / `78` / `45` / `180` | `wj-tui`'s per-panel title colors — each panel keeps its own so they stay visually distinct. Same value formats as `accent`. |
 
 Environment overrides:
@@ -359,6 +360,12 @@ and respect `NO_COLOR`. The chrome is themable from the [config](#configuration)
 title color — `color_projects`, `color_tasks`, `color_pending`, `color_range`,
 `color_day`, `color_timeline` — so the six panels stay visually distinct. Each
 takes a 256-color code, a hex value (`#9d7cd8`), or an ANSI name.
+
+The panel **layout** is configurable too: `balanced` (the default — the focused
+panel takes ~half its column), `spotlight` (the focused panel dominates, the rest
+shrink to thin strips), or `golden` (a wider sidebar and uneven 62/23/15 splits).
+Set the startup default with `layout=` in the config, or press **Shift+L** to
+cycle them live.
 
 Every action echoes the CLI's confirmation in the footer — a cyan `✓` line such
 as `✓ T1 12:30 completed — 1h30m`, or, for an [idempotent](#commands) no-op,

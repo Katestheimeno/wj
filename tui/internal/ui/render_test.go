@@ -1000,3 +1000,68 @@ func TestFocusedRowFollowsProjectAcrossReload(t *testing.T) {
 		t.Errorf("after reorder, filter = %q, want meetings (followed by identity)", got)
 	}
 }
+
+func TestLayoutSplit(t *testing.T) {
+	sum := func(s [3]int) int { return s[0] + s[1] + s[2] }
+	for _, lp := range layouts {
+		got := lp.split(100, 1)
+		if sum(got) != 100 {
+			t.Errorf("%s: split sum = %d, want 100 (%v)", lp.name, sum(got), got)
+		}
+		if got[1] < got[0] || got[1] < got[2] {
+			t.Errorf("%s: focused panel (idx1) should be the largest: %v", lp.name, got)
+		}
+	}
+	// spotlight emphasises the focused panel harder than balanced
+	if layouts[1].split(100, 1)[1] <= layouts[0].split(100, 1)[1] {
+		t.Error("spotlight focused share should exceed balanced")
+	}
+	// golden leaves its two non-focused panels uneven
+	g := layouts[2].split(100, 1) // focus idx1; others idx0 (hi) and idx2 (lo)
+	if g[0] == g[2] {
+		t.Errorf("golden non-focused panels should be uneven: %v", g)
+	}
+	// a too-short column or no-focus sidebar falls back to thirds, still summing
+	if s := layouts[0].split(9, 1); sum(s) != 9 {
+		t.Errorf("short split sum = %d (%v)", sum(s), s)
+	}
+	if s := layouts[0].sidebarSplit(30, -1); s != [3]int{10, 10, 10} {
+		t.Errorf("sidebar with no focus should be equal thirds, got %v", s)
+	}
+}
+
+func TestLayoutCycle(t *testing.T) {
+	m := sampleModel()
+	m.layout = 0
+	n, _ := m.handleKey(keyMsg("L"))
+	nm := n.(Model)
+	if nm.layout != 1 {
+		t.Fatalf("Shift+L should advance layout 0->1, got %d", nm.layout)
+	}
+	if !strings.Contains(nm.notice, layouts[1].name) {
+		t.Errorf("cycling should announce the layout, notice = %q", nm.notice)
+	}
+	nm.layout = len(layouts) - 1 // wraps back to 0
+	if n2, _ := nm.handleKey(keyMsg("L")); n2.(Model).layout != 0 {
+		t.Errorf("Shift+L should wrap to 0, got %d", n2.(Model).layout)
+	}
+}
+
+func TestSetLayout(t *testing.T) {
+	orig := defaultLayout
+	defer func() { defaultLayout = orig }()
+
+	SetLayout("spotlight")
+	want := layoutIndex("spotlight")
+	if defaultLayout != want {
+		t.Fatalf("SetLayout(spotlight): defaultLayout = %d, want %d", defaultLayout, want)
+	}
+	SetLayout("nonsense") // unknown name is a no-op
+	SetLayout("")         // empty is a no-op
+	if defaultLayout != want {
+		t.Errorf("unknown/empty SetLayout should not change defaultLayout (= %d)", defaultLayout)
+	}
+	if got := New(wj.Client{}, "", "", "").layout; got != want {
+		t.Errorf("New should adopt defaultLayout, got %d want %d", got, want)
+	}
+}

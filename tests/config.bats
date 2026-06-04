@@ -47,6 +47,22 @@ stub_wj_tui_dir() {
     [[ "$output" != *"-accent"* ]]
 }
 
+@test "wj ui forwards the configured layout to wj-tui" {
+    printf 'layout=spotlight\n' >"$WJ_CONFIG"
+    PATH="$(stub_wj_tui_dir):$PATH"
+    run wj ui
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"-layout spotlight"* ]]
+}
+
+@test "an empty layout omits the flag (wj-tui keeps its default)" {
+    printf 'layout=\n' >"$WJ_CONFIG"
+    PATH="$(stub_wj_tui_dir):$PATH"
+    run wj ui
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"-layout"* ]]
+}
+
 @test "wj ui forwards the per-panel colors as a -colors spec" {
     printf 'color_projects=99\ncolor_timeline=#abcdef\n' >"$WJ_CONFIG"
     PATH="$(stub_wj_tui_dir):$PATH"

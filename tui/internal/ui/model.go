@@ -158,6 +158,12 @@ type Model struct {
 	tickN     int        // 1s ticks since start; data reloads every dataEveryTicks
 	tlOffset  int        // timeline scroll position
 	autoPause bool       // when true, start/resume pause the project's other running task
+	layout    int        // index into layouts (panel arrangement); cycled with Shift+L
+}
+
+// activeLayout is the current panel-arrangement profile (clamped defensively).
+func (m Model) activeLayout() layoutProfile {
+	return layouts[clamp(m.layout, 0, len(layouts)-1)]
 }
 
 // New builds the initial model. from/to may be empty to use the CLI default
@@ -166,7 +172,7 @@ func New(cli wj.Client, from, to, by string) Model {
 	if by == "" {
 		by = "project"
 	}
-	return Model{cli: cli, from: from, to: to, by: by, today: time.Now().Format(dateLayout)}
+	return Model{cli: cli, from: from, to: to, by: by, today: time.Now().Format(dateLayout), layout: defaultLayout}
 }
 
 func (m Model) Init() tea.Cmd {

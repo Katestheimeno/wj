@@ -224,6 +224,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input = inputMode{active: true, action: "start",
 			prompt: "start: desc  (optional @project ⇥completes  %time, e.g. %9:30)"}
 		return m, nil
+	case "L":
+		// cycle the panel layout (balanced → spotlight → golden → …); live only,
+		// the startup default comes from the config's layout= / -layout.
+		m.layout = (m.layout + 1) % len(layouts)
+		m.notice = "layout: " + layouts[m.layout].name
+		return m, nil
 	case "A":
 		// toggle how start/resume treat another running task in the same project:
 		// parallel (default) vs auto-pause the previous one.
