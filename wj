@@ -15,7 +15,7 @@
 #
 set -uo pipefail
 
-WJ_VERSION="0.9.12"
+WJ_VERSION="0.9.13"
 
 # ---------------------------------------------------------------------------
 # Defaults (overridable in the config file)
@@ -29,7 +29,14 @@ default_project="admin" # used outside a git repo when no --project given
 interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui front-end
 auto_pause="off"        # on | off — on start/resume, auto-pause a running task in
                         # the SAME project. off = run them in parallel (default)
-accent="141"            # wj-tui main color: 256-color code, #hex, or ANSI name
+accent="141"            # wj-tui border/header color: 256-color code, #hex, or name
+# wj-tui per-panel title colors (each its own, so the panels stay distinct):
+color_projects="39"     # blue
+color_tasks="214"       # amber
+color_pending="170"     # orchid
+color_range="78"        # green
+color_day="45"          # cyan
+color_timeline="180"    # tan
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -84,9 +91,18 @@ interface=$interface
 # Override per command with --parallel / --auto-pause.
 auto_pause=$auto_pause
 
-# Main color for the wj-tui front-end (panel titles, focus, selection, prompts).
+# Border/header color for the wj-tui front-end (the focused panel's border).
 # A 256-color code (e.g. 141), a hex value (#9d7cd8), or an ANSI name (purple).
 accent=$accent
+
+# Per-panel title colors in wj-tui — each panel keeps its own so they stay
+# visually distinct. Same value formats as accent. Clear one to use the default.
+color_projects=$color_projects
+color_tasks=$color_tasks
+color_pending=$color_pending
+color_range=$color_range
+color_day=$color_day
+color_timeline=$color_timeline
 EOF
 }
 
@@ -458,6 +474,18 @@ now_ts()  { printf '%sT%s' "${ON:-$TODAY}" "$(eff_time)"; }
 now_min() { hm_to_min "$(eff_time)"; }
 cur_project() {
     if [[ -n $PROJECT_OVERRIDE ]]; then printf '%s' "$PROJECT_OVERRIDE"; else detect_project; fi
+}
+
+# build the wj-tui -colors value from the configured per-panel colors, skipping
+# any that are empty so the TUI keeps its built-in default for them.
+ui_colorspec() {
+    local out="" name var val
+    for name in projects tasks pending range day timeline; do
+        var="color_$name"; val=${!var:-}
+        [[ -n $val ]] || continue
+        out+="${out:+,}$name=$val"
+    done
+    printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------------------
@@ -1396,7 +1424,13 @@ CONFIG  (~/.config/wj/config — created on first run)
   default_project           project used outside a git repo          (admin)
   interface                 bare-wj front-end: minimal | ui          (minimal)
   auto_pause                start/resume auto-pause same project     (off)
-  accent                    wj-tui main color (256-code/#hex/name)   (141)
+  accent                    wj-tui focused-panel border color        (141)
+  color_projects            per-panel title colors in wj-tui — one   (39)
+  color_tasks               per panel; same value formats as accent  (214)
+  color_pending             (a 256-color code, #hex, or ANSI name)   (170)
+  color_range                                                        (78)
+  color_day                                                          (45)
+  color_timeline                                                     (180)
 
 EXAMPLES
   wj start "Refactor auth" --project backend   # start tracking
@@ -1461,6 +1495,8 @@ main() {
             if [[ $interface == ui ]] && command -v wj-tui >/dev/null 2>&1; then
                 local -a uiargs=(-wj "$(self_path)")
                 [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
+                local cspec; cspec=$(ui_colorspec)
+                [[ -n $cspec ]] && uiargs+=(-colors "$cspec")
                 exec wj-tui "${uiargs[@]}"
             fi
             cmd_status ;;
@@ -1474,6 +1510,8 @@ main() {
             [[ -n $TO ]]   && uiargs+=(-to "$TO")
             [[ -n $BY ]]   && uiargs+=(-by "$BY")
             [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
+            local cspec; cspec=$(ui_colorspec)
+            [[ -n $cspec ]] && uiargs+=(-colors "$cspec")
             exec wj-tui "${uiargs[@]}" ;;
         gantt)    cmd_gantt ;;
         start)    cmd_start ;;

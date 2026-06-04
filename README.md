@@ -272,7 +272,8 @@ display, independent of how totals are summed.
 | `default_project` | `admin` | Project used outside a git repo when no `--project` is given. |
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 | `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
-| `accent` | `141` | `wj-tui`'s main color (panel titles, focus, selection, prompts). A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
+| `accent` | `141` | `wj-tui`'s border/header color — the focused panel's border. A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
+| `color_projects` / `color_tasks` / `color_pending` / `color_range` / `color_day` / `color_timeline` | `39` / `214` / `170` / `78` / `45` / `180` | `wj-tui`'s per-panel title colors — each panel keeps its own so they stay visually distinct. Same value formats as `accent`. |
 
 Environment overrides:
 
@@ -349,7 +350,11 @@ one-line time prompt and runs the command with `--at` (a blank entry cancels;
 `X` confirms the void first, then asks for the time). Acting on a **past** day
 also prompts for a time, so an edit can't collapse to a zero-length interval.
 Colors are assigned per project (stable across days, including `--by task` rows)
-and respect `NO_COLOR`.
+and respect `NO_COLOR`. The chrome is themable from the [config](#configuration):
+`accent` sets the focused panel's border (and header), and each panel has its own
+title color — `color_projects`, `color_tasks`, `color_pending`, `color_range`,
+`color_day`, `color_timeline` — so the six panels stay visually distinct. Each
+takes a 256-color code, a hex value (`#9d7cd8`), or an ANSI name.
 
 Every action echoes the CLI's confirmation in the footer — a cyan `✓` line such
 as `✓ T1 12:30 completed — 1h30m`, or, for an [idempotent](#commands) no-op,

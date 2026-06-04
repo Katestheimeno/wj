@@ -25,7 +25,8 @@ func main() {
 		to      = flag.String("to", "", "range end YYYY-MM-DD (default: today)")
 		by      = flag.String("by", "project", "gantt rows: project | task")
 		bin     = flag.String("wj", "", "path to the wj binary (default: wj on PATH)")
-		accent  = flag.String("accent", "", "main UI color: 256-color code, hex (#rrggbb), or name (default: purple)")
+		accent  = flag.String("accent", "", "border/header color: 256-color code, hex (#rrggbb), or name (default: purple)")
+		colors  = flag.String("colors", "", "per-panel title colors, e.g. \"projects=39,timeline=#888888\"")
 		showVer = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -36,6 +37,7 @@ func main() {
 	}
 
 	ui.SetAccent(*accent)
+	ui.SetPanelColors(*colors)
 	cli := wj.Client{Bin: *bin}
 	model := ui.New(cli, *from, *to, *by)
 

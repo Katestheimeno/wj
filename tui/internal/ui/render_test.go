@@ -96,15 +96,17 @@ func TestFmtDur(t *testing.T) {
 func TestSetAccent(t *testing.T) {
 	defer SetAccent(defaultAccent) // restore the default for other tests
 	SetAccent("99")
+	// the accent drives the header/border style (titleStyle) and the package
+	// `accent` color used for the focused panel border.
 	if got := titleStyle.GetForeground(); got != lipgloss.Color("99") {
 		t.Errorf("titleStyle foreground = %v, want 99", got)
 	}
-	if got := selStyle.GetBackground(); got != lipgloss.Color("99") {
-		t.Errorf("selStyle background = %v, want 99", got)
+	if accent != lipgloss.Color("99") {
+		t.Errorf("accent = %v, want 99", accent)
 	}
 	SetAccent("") // empty is a no-op (keeps the previous accent)
-	if got := titleStyle.GetForeground(); got != lipgloss.Color("99") {
-		t.Errorf("empty SetAccent should be a no-op, foreground = %v", got)
+	if accent != lipgloss.Color("99") {
+		t.Errorf("empty SetAccent should be a no-op, accent = %v", accent)
 	}
 }
 
@@ -112,6 +114,28 @@ func TestDefaultAccentIsApplied(t *testing.T) {
 	SetAccent(defaultAccent)
 	if got := titleStyle.GetForeground(); got != lipgloss.Color(defaultAccent) {
 		t.Errorf("default accent not applied: titleStyle foreground = %v, want %s", got, defaultAccent)
+	}
+}
+
+func TestSetPanelColors(t *testing.T) {
+	// restore the defaults for other tests
+	defer SetPanelColors("projects=39,tasks=214,pending=170,range=78,day=45,timeline=180")
+
+	SetPanelColors("projects=99,timeline=#abcdef")
+	if colorProjects != lipgloss.Color("99") {
+		t.Errorf("projects color = %v, want 99", colorProjects)
+	}
+	if colorTimeline != lipgloss.Color("#abcdef") {
+		t.Errorf("timeline color = %v, want #abcdef", colorTimeline)
+	}
+	if colorTasks != lipgloss.Color("214") {
+		t.Errorf("an unspecified panel must keep its color, tasks = %v, want 214", colorTasks)
+	}
+
+	// malformed / empty entries are ignored, leaving colors untouched
+	SetPanelColors("garbage,day=,=99,")
+	if colorDay != lipgloss.Color("45") {
+		t.Errorf("malformed input must not change a color, day = %v, want 45", colorDay)
 	}
 }
 

@@ -22,13 +22,13 @@ func (m Model) View() string {
 
 	if m.showHelp {
 		return header + "\n" +
-			panel("Help", m.helpOverlay(), true, w, 0) + "\n" +
+			panel("Help", accent, m.helpOverlay(), true, w, 0) + "\n" +
 			footerStyle.Render("press ? or esc to close")
 	}
 
 	if m.search.active {
 		return header + "\n" +
-			panel("Search", m.searchOverlay(w), true, w, 0) + "\n" +
+			panel("Search", accent, m.searchOverlay(w), true, w, 0) + "\n" +
 			footerStyle.Render("type to filter · ↑↓ move · enter jump · esc cancel")
 	}
 
@@ -195,9 +195,9 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	}
 	if !fill {
 		return lipgloss.JoinVertical(lipgloss.Left,
-			panel("Projects", m.renderProjects(cw, 1<<30), m.pane == paneRange, w, 0),
-			panel(taskTitle, m.renderTasks(cw, 1<<30), m.pane == paneDay, w, 0),
-			panel(pendTitle, m.renderPending(cw, 1<<30), m.pane == panePending, w, 0),
+			panel("Projects", colorProjects, m.renderProjects(cw, 1<<30), m.pane == paneRange, w, 0),
+			panel(taskTitle, colorTasks, m.renderTasks(cw, 1<<30), m.pane == paneDay, w, 0),
+			panel(pendTitle, colorPending, m.renderPending(cw, 1<<30), m.pane == panePending, w, 0),
 		)
 	}
 	// focused sidebar panel gets the most room (−1 = none focused → equal thirds)
@@ -212,9 +212,9 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	}
 	hs := sidebarSplit(h, fi)
 	return lipgloss.JoinVertical(lipgloss.Left,
-		panel("Projects", m.renderProjects(cw, hs[0]-3), m.pane == paneRange, w, hs[0]),
-		panel(taskTitle, m.renderTasks(cw, hs[1]-3), m.pane == paneDay, w, hs[1]),
-		panel(pendTitle, m.renderPending(cw, hs[2]-3), m.pane == panePending, w, hs[2]),
+		panel("Projects", colorProjects, m.renderProjects(cw, hs[0]-3), m.pane == paneRange, w, hs[0]),
+		panel(taskTitle, colorTasks, m.renderTasks(cw, hs[1]-3), m.pane == paneDay, w, hs[1]),
+		panel(pendTitle, colorPending, m.renderPending(cw, hs[2]-3), m.pane == panePending, w, hs[2]),
 	)
 }
 
@@ -294,16 +294,16 @@ func (m Model) renderMain(w, h int, fill bool) string {
 	}
 	if !fill {
 		return lipgloss.JoinVertical(lipgloss.Left,
-			panel("Range", m.rangeBody(innerW, 1<<30), m.pane == paneRange, w, 0),
-			panel(dayTitle, m.renderDay(innerW, 1<<30), m.pane == paneDay, w, 0),
-			panel(tlTitle, m.renderTimeline(1<<30), m.pane == paneTimeline, w, 0),
+			panel("Range", colorRange, m.rangeBody(innerW, 1<<30), m.pane == paneRange, w, 0),
+			panel(dayTitle, colorDay, m.renderDay(innerW, 1<<30), m.pane == paneDay, w, 0),
+			panel(tlTitle, colorTimeline, m.renderTimeline(1<<30), m.pane == paneTimeline, w, 0),
 		)
 	}
 	hs := split3(h, int(m.pane))
 	return lipgloss.JoinVertical(lipgloss.Left,
-		panel("Range", m.rangeBody(innerW, hs[0]-3), m.pane == paneRange, w, hs[0]),
-		panel(dayTitle, m.renderDay(innerW, hs[1]-3), m.pane == paneDay, w, hs[1]),
-		panel(tlTitle, m.renderTimeline(hs[2]-3), m.pane == paneTimeline, w, hs[2]),
+		panel("Range", colorRange, m.rangeBody(innerW, hs[0]-3), m.pane == paneRange, w, hs[0]),
+		panel(dayTitle, colorDay, m.renderDay(innerW, hs[1]-3), m.pane == paneDay, w, hs[1]),
+		panel(tlTitle, colorTimeline, m.renderTimeline(hs[2]-3), m.pane == paneTimeline, w, hs[2]),
 	)
 }
 
@@ -847,20 +847,23 @@ func bar(minutes, max, width int, color lipgloss.Color) string {
 // panel wraps body in a titled, bordered box; the active pane is highlighted.
 // A positive height forces the box to that total height (content top-aligned),
 // so stacked panels fill the screen; height 0 leaves it content-sized.
-func panel(title, body string, active bool, width, height int) string {
+func panel(title string, tcolor lipgloss.Color, body string, active bool, width, height int) string {
 	st := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	if active {
-		st = st.BorderForeground(lipgloss.Color("39"))
+		st = st.BorderForeground(accent) // focused panel: accent border
 	} else {
 		st = st.BorderForeground(lipgloss.Color("240"))
 	}
 	if width > 6 {
 		st = st.Width(width - 2)
 	}
-	heading := titleStyle.Render(title)
-	if !active {
-		heading = dimStyle.Render(title)
+	// the title carries the panel's own signature color; the focused panel also
+	// underlines it (its border already turns the accent color).
+	hs := lipgloss.NewStyle().Bold(true).Foreground(tcolor)
+	if active {
+		hs = hs.Underline(true)
 	}
+	heading := hs.Render(title)
 	inner := heading + "\n" + body
 	if height > 2 {
 		st = st.Height(height - 2)
@@ -882,27 +885,39 @@ func clipLines(s string, n int) string {
 	return strings.Join(lines[:n], "\n")
 }
 
-// accent is the main UI color, used for the chrome that wj-tui emphasises:
-// panel titles, the focused-panel highlight, the selected-row background, and
-// the inline input prompt. It defaults to purple and is overridable from the
-// config file (accent=…) via SetAccent. Semantic colors (errors, today,
-// notices, the per-project palette) are deliberately NOT derived from it.
+// accent is the main UI color: it draws the focused panel's border and the top
+// header line. It defaults to purple and is overridable from the config file
+// (accent=…) via SetAccent.
 const defaultAccent = "141" // 256-color violet
 var accent = lipgloss.Color(defaultAccent)
+
+// Each of the six panels carries its own signature color, shown on its title,
+// so the panels stay visually distinct regardless of which one is focused. All
+// overridable from the config file (color_projects=, color_tasks=, …) via
+// SetPanelColors. Defaults are picked to be distinct from each other and from
+// the purple accent.
+var (
+	colorProjects = lipgloss.Color("39")  // blue
+	colorTasks    = lipgloss.Color("214") // amber
+	colorPending  = lipgloss.Color("170") // orchid
+	colorRange    = lipgloss.Color("78")  // green
+	colorDay      = lipgloss.Color("45")  // cyan
+	colorTimeline = lipgloss.Color("180") // tan
+)
 
 // styles. The accent-derived ones are (re)built by applyTheme(); the rest are
 // fixed because their color carries meaning.
 var (
 	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	todayStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("84")) // green = today
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))           // red = error
-	noticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))            // cyan: neutral feedback
+	todayStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("84"))                                    // green = today
+	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))                                              // red = error
+	noticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))                                               // cyan: neutral feedback
+	selStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("238")) // selected row
+	inputStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))                                   // yellow: typing
 
-	titleStyle lipgloss.Style // panel titles
-	focusStyle lipgloss.Style // the focused panel's title
-	selStyle   lipgloss.Style // the selected row
-	inputStyle lipgloss.Style // the inline prompt text
+	titleStyle lipgloss.Style // the top header line (accent)
+	focusStyle lipgloss.Style // the focused day label in the range view (accent)
 )
 
 func init() { applyTheme() }
@@ -911,19 +926,47 @@ func init() { applyTheme() }
 func applyTheme() {
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	focusStyle = lipgloss.NewStyle().Bold(true).Foreground(accent).Underline(true)
-	selStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(accent)
-	inputStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
 }
 
-// SetAccent overrides the main UI color from a lipgloss spec — a 256-color code
-// ("141"), a hex value ("#9d7cd8"), or an ANSI name. An empty spec is ignored,
-// keeping the purple default. Call once at startup, before the program runs.
+// SetAccent overrides the main UI color (focused border + header) from a
+// lipgloss spec — a 256-color code ("141"), a hex value ("#9d7cd8"), or an ANSI
+// name. An empty spec is ignored, keeping the purple default. Call once at
+// startup, before the program runs.
 func SetAccent(spec string) {
 	if spec == "" {
 		return
 	}
 	accent = lipgloss.Color(spec)
 	applyTheme()
+}
+
+// SetPanelColors overrides the per-panel title colors from a "name=spec,…"
+// string, e.g. "projects=39,timeline=#888888". Recognised names: projects,
+// tasks, pending, range, day, timeline. Unknown names and empty specs are
+// ignored, keeping the defaults. Call once at startup.
+func SetPanelColors(spec string) {
+	for _, pair := range strings.Split(spec, ",") {
+		name, val, ok := strings.Cut(pair, "=")
+		name, val = strings.TrimSpace(name), strings.TrimSpace(val)
+		if !ok || val == "" {
+			continue
+		}
+		c := lipgloss.Color(val)
+		switch name {
+		case "projects":
+			colorProjects = c
+		case "tasks":
+			colorTasks = c
+		case "pending":
+			colorPending = c
+		case "range":
+			colorRange = c
+		case "day":
+			colorDay = c
+		case "timeline":
+			colorTimeline = c
+		}
+	}
 }
 
 // windowRows returns at most max of rows, scrolled to keep `active` visible.

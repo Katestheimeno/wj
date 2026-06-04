@@ -232,9 +232,12 @@ Config lives at
 .I auto_pause
 (on|off \(em start/resume auto-pause another running task in the same project;
 default off),
-and
 .I accent
-(the wj-tui main color \(em a 256-color code, #hex, or ANSI name; default 141, a purple).
+(the wj-tui border/header color \(em a 256-color code, #hex, or ANSI name; default 141, a purple),
+and
+.IR color_projects ", " color_tasks ", " color_pending ", " color_range ", " color_day ", " color_timeline
+(the wj-tui per-panel title colors, one for each panel; same value formats as
+.IR accent ).
 .SH FILES
 .TP
 .I ~/.config/wj/config
