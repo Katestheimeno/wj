@@ -95,3 +95,46 @@ load test_helper
         echo "$output" | python3 -c 'import sys,json; json.load(sys.stdin)'
     fi
 }
+
+@test "continue copies a past day's task into a fresh task today" {
+    wj start "carryover" --project demo --date "$WJ_DAY" --at 9:00
+    wj pause T1 --date "$WJ_DAY" --at 9:30
+    run wj continue T1 --date "$WJ_DAY" --at 14:00
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"continued from $WJ_DAY T1"* ]]
+    # the new task lives today (real date), carries the desc + project, and
+    # records the lineage as a note; the original past-day task is untouched.
+    run wj show T1
+    [[ "$output" == *"carryover"* ]]
+    [[ "$output" == *"demo"* ]]
+    [[ "$output" == *"continued from $WJ_DAY T1"* ]]
+    run wj show T1 --date "$WJ_DAY"
+    [[ "$output" == *"paused"* ]]
+    [[ "$output" != *"continued from"* ]]
+}
+
+@test "continue --project overrides the carried-over project" {
+    wj start "carryover" --project alpha --date "$WJ_DAY" --at 9:00
+    run wj continue T1 --date "$WJ_DAY" --project beta --at 14:00
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[beta]"* ]]
+}
+
+@test "continue requires --date (the source day)" {
+    wj start "carryover" --project demo --date "$WJ_DAY" --at 9:00
+    run wj continue T1
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--date"* ]]
+}
+
+@test "continue refuses today as the source" {
+    run wj continue T1 --date "$(date +%F)"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"past day"* ]]
+}
+
+@test "continue errors on a task absent from the source day" {
+    run wj continue T9 --date "$WJ_DAY"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no such task on $WJ_DAY"* ]]
+}
