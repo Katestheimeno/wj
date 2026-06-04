@@ -87,7 +87,10 @@ for a past day.
 Per-task totals table for a day (default: today). The default command.
 .TP
 .BI "grid " [date]
-Slot-by-slot schedule for a day.
+Slot-by-slot schedule for a day. The time axis is framed by
+.IR shift_start / shift_end ,
+auto-expanding to include any work tracked outside those hours (and auto-fitting
+the day when the bounds are unset), so nothing is ever clipped.
 .TP
 .B gantt
 Multi-day overview: rows (\fB--by\fR project|task) by days of tracked time.
@@ -218,7 +221,7 @@ each its own grid column.
 Config lives at
 .I ~/.config/wj/config
 (seeded on first run; key=value, shell-sourced). Keys:
-.IR shift_start ", " shift_end " (working-day bounds), "
+.IR shift_start ", " shift_end " (default grid frame; comment out to auto-fit the grid to each day), "
 .I slot_minutes
 (grid step),
 .I round

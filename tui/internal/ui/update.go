@@ -499,14 +499,21 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch in.action {
 		case "at":
 			if val == "" {
-				return m.keepPrompt("time required (e.g. 14:30) — esc to abort")
+				return m.keepPrompt("time required: type a time like 14:30 — esc to abort")
 			}
 			m.closeInput()
 			return m, m.mutate(append(in.pending, "--at", val)...)
 		case "start":
 			desc, proj, at := parseStartInput(val)
 			if desc == "" {
-				return m.keepPrompt("description required (e.g. fix bug @proj) — esc to abort")
+				// the failing case is usually "@project" with no text — say so
+				// plainly rather than echoing an @proj example that looks like
+				// the input was accepted.
+				hint := "description required: type what you're working on — esc to abort"
+				if proj != "" {
+					hint = "description required: @" + proj + " needs task text too — esc to abort"
+				}
+				return m.keepPrompt(hint)
 			}
 			m.closeInput()
 			args := []string{desc}
@@ -538,7 +545,12 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "add": // new pending backlog task (not a dated mutation)
 			desc, proj, due := parsePendingInput(val)
 			if desc == "" {
-				return m.keepPrompt("description required — esc to abort")
+				// same trap as start: "@project" alone gives no description.
+				hint := "description required: type what to add — esc to abort"
+				if proj != "" {
+					hint = "description required: @" + proj + " needs task text too — esc to abort"
+				}
+				return m.keepPrompt(hint)
 			}
 			m.closeInput()
 			args := []string{"add", desc}

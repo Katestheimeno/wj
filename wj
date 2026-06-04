@@ -20,8 +20,12 @@ WJ_VERSION="0.9.13"
 # ---------------------------------------------------------------------------
 # Defaults (overridable in the config file)
 # ---------------------------------------------------------------------------
-shift_start=09:00
-shift_end=19:00
+# Working-day bounds for the grid/gantt axis. Empty by default here so that
+# commenting them out in the config file actually takes effect: an unset bound
+# drops the fixed frame and the grid auto-fits the day's real hours. A freshly
+# seeded config (see seed_config) writes the friendly 09:00/19:00 explicitly.
+shift_start=
+shift_end=
 slot_minutes=5          # the configurable "jump"
 round="down"            # down | nearest   (grid snapping only)
 totals="exact"          # exact | slot     (how time totals are summed)
@@ -63,9 +67,11 @@ seed_config() {
     cat >"$WJ_CONFIG" <<EOF
 # wj configuration — key=value, shell-sourced (quote values with spaces)
 
-# Working-day bounds for the grid view
-shift_start=$shift_start
-shift_end=$shift_end
+# Working-day bounds for the grid/gantt axis.
+# Comment these out (or leave them empty) to drop the fixed 09:00–19:00 frame:
+# the grid then auto-fits to each day's actual tracked hours instead.
+shift_start=09:00
+shift_end=19:00
 
 # The time "jump" between grid slots, in minutes
 slot_minutes=$slot_minutes
@@ -153,7 +159,7 @@ normalize_time() {
     printf '%02d:%02d' "$h" "$m"
 }
 
-# snap a minute value to a grid slot boundary (relative to shift_start)
+# snap a minute value to a grid slot boundary (relative to the window start)
 snap_min() {
     local m=$1 start=$2 slot=$3 off rem
     off=$(( m - start ))
@@ -357,6 +363,68 @@ task_exists() {
     [[ -n ${_R_SEEN[$2]:-} ]]
 }
 
+# --- grid window & open-interval cap ----------------------------------------
+# The grid/gantt are framed by an effective [start,end] window. shift_start /
+# shift_end (when set) are only the *default* frame: the window always expands
+# to fit the day's real activity, and when the bounds are unset (commented out
+# in the config) the frame is dropped entirely and the window auto-fits the day.
+
+# round a minute-of-day down / up to the hour
+floor_hour() { printf '%d' "$(( $1 / 60 * 60 ))"; }
+ceil_hour()  { printf '%d' "$(( ($1 + 59) / 60 * 60 ))"; }
+
+# earliest and latest event minute among a day's non-cancelled tasks, printed
+# as "lo hi" (nothing when the day has no such events).
+day_span() {
+    local file=$1 ts id proj evt note m lo="" hi=""
+    [[ -f $file ]] || return 0
+    replay_day "$file"
+    while IFS=$'\t' read -r ts id proj evt note; do
+        [[ -n $id ]] || continue
+        (( ${_R_CANCEL[$id]:-0} )) && continue
+        m=$(( 10#${ts:11:2} * 60 + 10#${ts:14:2} ))
+        [[ -z $lo || $m -lt $lo ]] && lo=$m
+        [[ -z $hi || $m -gt $hi ]] && hi=$m
+    done <"$file"
+    [[ -n $lo ]] && printf '%d %d' "$lo" "$hi"
+}
+
+# the cap minute for open intervals (and the now-marker) on a day:
+#   today      -> the current wall clock
+#   a past day -> that day's last recorded event, so a task left open is counted
+#                 only up to the last known activity, never silently extended to
+#                 a guessed shift end. Falls back to shift_end / 19:00 only when
+#                 the day has no events at all.
+report_nm() {
+    local d=$1 file=$2 span
+    if [[ $d == "$TODAY" ]]; then now_min; return; fi
+    span=$(day_span "$file")
+    [[ -n $span ]] && { printf '%d' "${span##* }"; return; }
+    hm_to_min "${shift_end:-19:00}"
+}
+
+# effective grid window "start end" (minutes) for a day: the configured shift
+# bounds (when set) expanded out to whole hours around the day's activity (and
+# the open-interval cap nm). With no bounds set it auto-fits the activity; with
+# no activity at all it falls back to the configured-or-default 09:00–19:00.
+grid_window() {
+    local file=$1 nm=$2 span lo hi s="" e="" flo fhi
+    [[ -n $shift_start ]] && s=$(hm_to_min "$shift_start")
+    [[ -n $shift_end   ]] && e=$(hm_to_min "$shift_end")
+    span=$(day_span "$file")
+    if [[ -n $span ]]; then
+        lo=${span%% *}; hi=${span##* }
+        [[ -n $nm && $nm -gt $hi ]] && hi=$nm
+        flo=$(floor_hour "$lo"); fhi=$(ceil_hour "$hi")
+        [[ -z $s || $flo -lt $s ]] && s=$flo
+        [[ -z $e || $fhi -gt $e ]] && e=$fhi
+    fi
+    [[ -n $s ]] || s=$(hm_to_min "${shift_start:-09:00}")
+    [[ -n $e ]] || e=$(hm_to_min "${shift_end:-19:00}")
+    (( e > s )) || e=$(( s + 60 ))
+    printf '%d %d' "$s" "$e"
+}
+
 # resolve a task by current state: mode=active (in-progress) | resumable (paused/deferred).
 # Returns the most-recently-transitioned matching task, optionally filtered by project.
 # Correctly handles several concurrently-active tasks across projects.
@@ -464,7 +532,7 @@ eff_time() {
     if [[ -n $AT ]]; then printf '%s' "$AT"; return; fi
     if [[ -n $ON && $ON != "$TODAY" ]]; then
         local t; t=$(last_event_time "$(day_file "$ON")")
-        [[ -n $t ]] || t=$shift_start
+        [[ -n $t ]] || t=${shift_start:-09:00}
         (( INFER_NOTED )) || { printf 'wj: no --at; using %s for %s\n' "$t" "$ON" >&2; INFER_NOTED=1; }
         printf '%s' "$t"; return
     fi
@@ -649,7 +717,7 @@ cmd_ls() {
     for dd in "${dates[@]}"; do
         file=$(day_file "$dd")
         [[ -f $file ]] || continue
-        if [[ $dd == "$TODAY" ]]; then nm=$(hm_to_min "$(date +%H:%M)"); else nm=$(hm_to_min "$shift_end"); fi
+        nm=$(report_nm "$dd" "$file")
         while read -r id; do
             [[ -z $id ]] && continue
             st=$(task_status "$file" "$id")
@@ -676,8 +744,7 @@ cmd_show() {
     [[ $id =~ ^T[0-9]+$ ]] || die "not a task id: $id"
     file=$(day_file "$d")
     task_exists "$file" "$id" || die "no such task on $d: $id"
-    local nm
-    if [[ $d == "$TODAY" ]]; then nm=$(hm_to_min "$(date +%H:%M)"); else nm=$(hm_to_min "$shift_end"); fi
+    local nm; nm=$(report_nm "$d" "$file")
     (( JSON )) && { json_show "$d" "$file" "$id" "$nm"; return; }
     local proj st mins desc
     proj=$(task_project "$file" "$id")
@@ -711,7 +778,7 @@ cmd_show() {
 cmd_status() {
     local d=${ARGS[0]:-${ON:-$TODAY}} file ids id nm
     file=$(day_file "$d")
-    if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$(hm_to_min "$shift_end"); fi
+    nm=$(report_nm "$d" "$file")
     (( JSON )) && { json_status "$d" "$file" "$nm"; return; }
     [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
     printf '\nTasks — %s\n\n' "$d"
@@ -740,12 +807,11 @@ cmd_status() {
 cmd_grid() {
     local d=${ARGS[0]:-${ON:-$TODAY}} file
     file=$(day_file "$d")
-    local start end slot
-    start=$(hm_to_min "$shift_start"); end=$(hm_to_min "$shift_end"); slot=$slot_minutes
-    local nm
-    if [[ $d == "$TODAY" ]]; then nm=$(now_min); else nm=$end; fi
-    (( nm > end )) && nm=$end
-    (( JSON )) && { json_grid "$d" "$file" "$nm"; return; }
+    local start end slot nm
+    slot=$slot_minutes
+    nm=$(report_nm "$d" "$file")
+    read -r start end < <(grid_window "$file" "$nm")
+    (( JSON )) && { json_grid "$d" "$file" "$nm" "$start" "$end"; return; }
     [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
 
     # collect ids (cancelled tasks are voided — omit them)
@@ -818,8 +884,7 @@ cmd_report() {
     while read -r d; do
         file=$(day_file "$d")
         [[ -f $file ]] || continue
-        nm=$(hm_to_min "$shift_end")
-        [[ $d == "$TODAY" ]] && nm=$(now_min)
+        nm=$(report_nm "$d" "$file")
         while read -r id; do
             [[ -z $id ]] && continue
             task_cancelled "$file" "$id" && continue
@@ -942,9 +1007,12 @@ json_segments() {
 
 # intraday grid JSON: per-task segments for the Gantt drill-down view
 json_grid() {
-    local d=$1 file=$2 nm=$3
+    local d=$1 file=$2 nm=$3 start=$4 end=$5
+    # shift_start/shift_end here are the *effective* grid window (the configured
+    # bounds expanded to fit the day, or auto-fit when unset) so the TUI axis
+    # always frames every bar — never clipping work tracked outside shift hours.
     printf '{"date":%s,"shift_start":%s,"shift_end":%s,"slot_minutes":%d,"now":%s,"tasks":[' \
-        "$(json_str "$d")" "$(json_str "$shift_start")" "$(json_str "$shift_end")" \
+        "$(json_str "$d")" "$(json_str "$(min_to_hm "$start")")" "$(json_str "$(min_to_hm "$end")")" \
         "$slot_minutes" "$(json_str "$(min_to_hm "$nm")")"
     local first=1 id
     if [[ -f $file ]]; then
@@ -979,7 +1047,7 @@ cmd_gantt() {
     for d in "${days[@]}"; do
         file=$(day_file "$d")
         [[ -f $file ]] || continue
-        nm=$(hm_to_min "$shift_end"); [[ $d == "$TODAY" ]] && nm=$(now_min)
+        nm=$(report_nm "$d" "$file")
         while read -r id; do
             [[ -z $id ]] && continue
             task_cancelled "$file" "$id" && continue
@@ -1202,7 +1270,7 @@ cmd_search() {
             yyyy=${base##*/}
             [[ $yyyy =~ ^[0-9]{4}$ && $mm =~ ^[0-9]{2}$ && $dd =~ ^[0-9]{2}$ ]] || continue
             d="$yyyy-$mm-$dd"
-            nm=$(hm_to_min "$shift_end"); [[ $d == "$TODAY" ]] && nm=$(now_min)
+            nm=$(report_nm "$d" "$file")
             while read -r id; do
                 [[ -z $id ]] && continue
                 task_cancelled "$file" "$id" && continue
@@ -1417,7 +1485,7 @@ IDEMPOTENT STATE CHANGES
   defer and cancel) appends no event and just prints e.g. "T1  already paused".
 
 CONFIG  (~/.config/wj/config — created on first run)
-  shift_start / shift_end   working-day bounds for the grid          (09:00 / 19:00)
+  shift_start / shift_end   default grid frame; comment out to auto-fit (09:00 / 19:00)
   slot_minutes              grid time-step, i.e. the "jump"           (5)
   round                     grid snapping: down | nearest             (down)
   totals                    time summing: exact | slot               (exact)

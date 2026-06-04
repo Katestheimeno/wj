@@ -678,7 +678,8 @@ func (m Model) renderRange(innerW, maxBody int) string {
 }
 
 // renderDay draws the focused day's intraday Gantt: one row per task (after the
-// project filter), a time axis from shift_start to shift_end, colored bars for
+// project filter), a time axis spanning the grid's effective window (the shift
+// frame, auto-expanded/auto-fit by the CLI to cover the day), colored bars for
 // active segments.
 func (m Model) renderDay(innerW, maxBody int) string {
 	if m.grid == nil {

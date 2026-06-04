@@ -8,15 +8,15 @@
 WJ="${BATS_TEST_DIRNAME}/../wj"
 
 # A fixed, arbitrary past date used by the integration tests. Using a past day
-# (never "today") makes open-interval totals deterministic: the CLI caps them at
-# shift_end rather than the wall clock.
+# (never "today") makes totals deterministic: an open interval is capped at the
+# day's last recorded event rather than the moving wall clock.
 WJ_DAY="2026-05-30"
 
 setup() {
     WJ_DATA_DIR="$(mktemp -d "${BATS_TMPDIR:-/tmp}/wj-data.XXXXXX")"
     WJ_CONFIG="$(mktemp "${BATS_TMPDIR:-/tmp}/wj-config.XXXXXX")"
     export WJ_DATA_DIR WJ_CONFIG
-    : >"$WJ_CONFIG"   # empty config -> wj uses its built-in defaults
+    : >"$WJ_CONFIG"   # empty config: built-in defaults, shift bounds unset (auto-fit grid)
 }
 
 teardown() {

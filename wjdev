@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# wjdev — run the in-repo wj / wj-tui against an ISOLATED scratch dataset, so you
+# can try changes before shipping them without ever touching your real
+# ~/.local/share/wj data (the wj you use in another terminal is unaffected).
+#
+# Usage:
+#   ./wjdev <wj args...>     run the repo's ./wj  (e.g. ./wjdev status, ./wjdev grid --json)
+#   ./wjdev ui               build + launch the repo's wj-tui on the scratch data
+#   ./wjdev build            (re)build tui/wj-tui
+#   ./wjdev seed             wipe + repopulate sample data (incl. out-of-shift work + pending)
+#   ./wjdev reset            wipe the scratch data/config
+#   ./wjdev where            print the scratch paths
+#
+# The scratch locations can be overridden:
+#   WJ_DEV_DIR     (default: ~/.local/share/wj-dev)
+#   WJ_DEV_CONFIG  (default: ~/.config/wj-dev.conf)
+# Set WJDEV_NO_BUILD=1 to skip the rebuild that `ui` does by default.
+#
+set -euo pipefail
+
+# Repo root = the directory this script lives in (resolve symlinks), so wjdev
+# works no matter where it's called from.
+REPO="$(cd "$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+
+# Isolated data + config. Exported so both ./wj and the wj subprocess that
+# wj-tui spawns inherit them.
+export WJ_DATA_DIR="${WJ_DEV_DIR:-$HOME/.local/share/wj-dev}"
+export WJ_CONFIG="${WJ_DEV_CONFIG:-$HOME/.config/wj-dev.conf}"
+
+WJ="$REPO/wj"
+TUI="$REPO/tui/wj-tui"
+
+note() { printf 'wjdev: %s\n' "$*" >&2; }
+
+build_tui() { ( cd "$REPO" && make tui >/dev/null ) && note "built $TUI"; }
+
+seed_data() {
+    rm -rf "$WJ_DATA_DIR" "$WJ_CONFIG"
+    "$WJ" config >/dev/null                       # seed the default (09:00–19:00) config
+    local today; today=$(date +%Y-%m-%d)
+    "$WJ" start    "review PRs"      --project backend --at 10:00 >/dev/null
+    "$WJ" complete T1                                  --at 11:30 >/dev/null
+    "$WJ" start    "early standup"   --project ops     --at 08:10 >/dev/null   # before shift_start
+    "$WJ" complete T2                                  --at 08:45 >/dev/null
+    "$WJ" start    "writing docs"    --project backend --at 09:30 >/dev/null   # left running
+    "$WJ" add      "ship the release"   --project backend --due "$today" >/dev/null
+    "$WJ" add      "answer support tix" --project ops               >/dev/null
+    note "seeded sample data in $WJ_DATA_DIR"
+}
+
+case "${1:-}" in
+    ui)
+        shift
+        [[ -n "${WJDEV_NO_BUILD:-}" ]] || build_tui
+        [[ -x "$TUI" ]] || build_tui
+        exec "$TUI" -wj "$WJ" "$@"
+        ;;
+    build)
+        build_tui
+        ;;
+    seed)
+        seed_data
+        ;;
+    reset)
+        rm -rf "$WJ_DATA_DIR" "$WJ_CONFIG"
+        note "scratch data cleared ($WJ_DATA_DIR)"
+        ;;
+    where)
+        printf 'data:   %s\nconfig: %s\n' "$WJ_DATA_DIR" "$WJ_CONFIG"
+        ;;
+    *)
+        # Everything else is a plain wj command against the scratch data.
+        exec "$WJ" "$@"
+        ;;
+esac

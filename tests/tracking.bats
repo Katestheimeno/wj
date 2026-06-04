@@ -63,11 +63,15 @@ load test_helper
     [[ "$output" == *"beta"* ]]
 }
 
-@test "open task on a past day is capped at shift_end" {
-    # started 09:00, never closed -> capped at 19:00 default shift_end = 10h
+@test "open task on a past day is counted up to the day's last activity" {
+    # T1 left open at 09:00; the last recorded event is T2 completing at 11:30,
+    # so T1 is counted 09:00->11:30 = 2h30m — never extended to a guessed shift
+    # end (which no longer exists once shift bounds can be unset).
     wj start "ongoing" --project demo --date "$WJ_DAY" --at 9:00
+    wj start "other"   --project demo --date "$WJ_DAY" --at 11:00
+    wj complete T2 --date "$WJ_DAY" --at 11:30
     run wj show T1 --date "$WJ_DAY"
-    [[ "$output" == *"10h00m"* ]]
+    [[ "$output" == *"2h30m"* ]]
     [[ "$output" == *"in-progress"* ]]
 }
 

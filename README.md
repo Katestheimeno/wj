@@ -45,8 +45,9 @@ Total tracked: 1h15m
   the same project; flip `auto_pause=on` (or pass `--auto-pause`) to keep one
   running task per project. Different projects always run at once (each is its
   own grid column).
-- **Time grid** — a configurable slot grid (default 5-minute "jumps", 09:00–19:00)
-  visualises the shape of your day.
+- **Time grid** — a configurable slot grid (default 5-minute "jumps", framed at
+  09:00–19:00 but auto-expanding to fit any out-of-hours work) visualises the
+  shape of your day. Comment out the shift bounds for a full 24h / auto-fit grid.
 - **Multi-day overview** — `wj gantt` prints a projects(or tasks)×days matrix of
   time totals right in the terminal (the CLI counterpart of the TUI's Range view).
 - **Machine-readable** — `status`, `show`, `grid` and `gantt` accept `--json` for a
@@ -256,8 +257,9 @@ grid placement are all computed by replaying the rows.
 Totals sum the active intervals between `start`/`resume` and `pause`/`complete`/`defer`.
 With `totals=exact` (default) they're exact to the minute; with `totals=slot` each
 total rounds up to a whole `slot_minutes`. A still-running task counts up to "now"
-(or `shift_end` when you view a past day). The grid is always slot-aligned for
-display, independent of how totals are summed.
+(or, on a past day, that day's last recorded event — never a guessed shift end).
+Time tracked outside shift hours is counted in full. The grid is always
+slot-aligned for display, independent of how totals are summed.
 
 ## Configuration
 
@@ -265,7 +267,7 @@ display, independent of how totals are summed.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `shift_start` / `shift_end` | `09:00` / `19:00` | Working-day bounds drawn by the grid. |
+| `shift_start` / `shift_end` | `09:00` / `19:00` | Default grid/gantt frame. The window auto-expands to fit any work tracked outside it; **comment either line out** (or leave it empty) to drop the fixed frame and auto-fit the grid to each day (e.g. a full 24h). |
 | `slot_minutes` | `5` | Grid time-step — the "jump" between slots. |
 | `round` | `down` | Grid snapping of event times: `down` or `nearest`. |
 | `totals` | `exact` | Time summing: `exact` minutes or `slot`-rounded. |
@@ -325,8 +327,9 @@ Main:
 
 - **Range** — a multi-day Gantt: one row per project (or task), one column per
   day, with project-colored intensity bars.
-- **Day** — the focused day's intraday Gantt: a time axis from `shift_start` to
-  `shift_end` with a `now ▲` marker and colored segment bars per task.
+- **Day** — the focused day's intraday Gantt: a time axis framed by the shift
+  bounds (auto-expanding to fit any out-of-hours work, or auto-fitting the day
+  when the bounds are unset) with a `now ▲` marker and colored segment bars per task.
 - **Timeline** — the selected task's full event history.
 
 `/` opens a global **search** overlay: type to filter every task ever recorded

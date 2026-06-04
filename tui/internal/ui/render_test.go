@@ -346,6 +346,25 @@ func TestStartOpensInput(t *testing.T) {
 	}
 }
 
+func TestStartRequiresDescription(t *testing.T) {
+	m := sampleModel()
+	m, _ = mustModel(m.handleKey(keyMsg("s"))) // open the start prompt
+	// type a bare "@proj" with no task text, then submit
+	m.input.value = "@proj"
+	m, _ = mustModel(m.handleKey(keyMsg("enter")))
+	// the prompt must stay open (not silently vanish) with a clear, tailored hint
+	if !m.input.active {
+		t.Fatal("project-only start should keep the prompt open, not submit")
+	}
+	if !strings.Contains(m.err, "@proj needs task text too") {
+		t.Errorf("hint = %q, want it to name the @proj-needs-text case", m.err)
+	}
+	// and the hint must not echo a misleading "e.g. ... @proj" example
+	if strings.Contains(m.err, "e.g.") {
+		t.Errorf("hint should not use a cryptic e.g. example: %q", m.err)
+	}
+}
+
 func TestInputTypingAndSubmit(t *testing.T) {
 	m := drilled()
 	// open amend on the selected task
