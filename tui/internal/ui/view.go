@@ -579,7 +579,7 @@ func (m Model) runningHeader() string {
 	if m.live == nil || m.liveAt.IsZero() {
 		return ""
 	}
-	for _, t := range m.live.Tasks {
+	for _, t := range m.myTasks() { // your running task, not a teammate's
 		if t.Status != "in-progress" {
 			continue
 		}
@@ -712,6 +712,7 @@ func (m Model) helpOverlay() string {
 		{"⇥", "autocomplete a known project (in start / move)"},
 		{"Enter / Esc", "submit · cancel"},
 		{"~General", ""},
+		{"S", "sync the shared journal (git pull/push) — needs `wj sync init` once"},
 		{"?", "toggle this help"},
 		{"Ctrl+Z", "suspend to the background (fg to resume)"},
 		{"q / Ctrl+C", "quit"},
@@ -835,7 +836,13 @@ func (m Model) renderTasks(cw, maxRows int) string {
 			label = t.ID + " " + t.Desc
 		}
 		glyph, gc := statusGlyph(t.Status)
-		items[i] = listLine(glyph, gc, ProjectColor(t.Project), label, fmtDur(t.Minutes), i == m.selTask, cw)
+		// own tasks read in their project colour; a teammate's task (its id is
+		// already shown qualified, e.g. alice/T3) is tinted by author instead.
+		lc := ProjectColor(t.Project)
+		if !m.taskOwned(t) {
+			lc = ProjectColor(t.Actor)
+		}
+		items[i] = listLine(glyph, gc, lc, label, fmtDur(t.Minutes), i == m.selTask, cw)
 	}
 	items = windowRows(items, m.selTask, maxRows)
 	return strings.Join(items, "\n")
@@ -881,10 +888,7 @@ func statusGlyph(status string) (string, lipgloss.Color) {
 // activeProject is the project of today's in-progress task ("" if none),
 // used to flag the running project in the Projects list.
 func (m Model) activeProject() string {
-	if m.live == nil {
-		return ""
-	}
-	for _, t := range m.live.Tasks {
+	for _, t := range m.myTasks() { // your running project, not a teammate's
 		if t.Status == "in-progress" {
 			return t.Project
 		}
@@ -895,11 +899,13 @@ func (m Model) activeProject() string {
 // todayRollup is a compact count of today's tasks by status plus the day total,
 // e.g. ">1 =0 x4 · Σ16h44m" (empty until today's status has loaded).
 func (m Model) todayRollup() string {
-	if m.live == nil {
+	mine := m.myTasks()
+	if len(mine) == 0 {
 		return ""
 	}
-	var run, paused, deferred, done int
-	for _, t := range m.live.Tasks {
+	var run, paused, deferred, done, total int
+	for _, t := range mine {
+		total += t.Minutes
 		switch t.Status {
 		case "in-progress":
 			run++
@@ -920,7 +926,7 @@ func (m Model) todayRollup() string {
 		counts += " " + seg("deferred", deferred)
 	}
 	counts += " " + seg("completed", done)
-	return counts + dimStyle.Render(" · Σ"+fmtDur(m.live.TotalMinutes))
+	return counts + dimStyle.Render(" · Σ"+fmtDur(total)) // your total, not the team's
 }
 
 // statusKey is the legend's decoder for the status glyphs.

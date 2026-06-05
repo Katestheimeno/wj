@@ -314,6 +314,10 @@ qkey() { case $1 in */*) printf '%s' "$1" ;; *) printf '%s/%s' "$(cur_actor)" "$
 # others. So single-author output reads exactly like the old layout.
 disp_id() { local a; a=$(cur_actor); case $1 in "$a"/*) printf '%s' "${1#"$a"/}" ;; *) printf '%s' "$1" ;; esac; }
 
+# the owning author of a task id (qualified -> its prefix; bare -> the current
+# actor, since bare ids are always your own).
+id_actor() { case $1 in */*) printf '%s' "${1%%/*}" ;; *) printf '%s' "$(cur_actor)" ;; esac; }
+
 # day_stream emits every event for a day from all authors' files, with the id
 # qualified as "<actor>/<id>" (legacy DD.tsv is attributed to the current actor).
 # No sort: each file's events stay in append order, and distinct authors' tasks
@@ -948,6 +952,122 @@ cmd_complete() {
     printf '%s  %s  completed — %s\n' "$id" "${ts:11:5}" "$(fmt_dur "$mins")"
 }
 
+# ---------------------------------------------------------------------------
+# Collaboration: sync the (author-partitioned, append-only) data dir over git.
+# Append-only files + actor-partitioning + the union merge driver below mean
+# concurrent authors never conflict, so "sync" is just pull --rebase + push.
+# ---------------------------------------------------------------------------
+
+# a foreground/interactive invocation (a real terminal) may prompt for an ssh
+# passphrase; a non-interactive one (e.g. the TUI's sync) must never hang.
+sync_interactive() { [[ -t 1 ]]; }
+
+# run git in the data repo. Non-interactive: never prompt, time out, fail clean.
+_git() {
+    if sync_interactive; then
+        git -C "$WJ_DATA_DIR" "$@"
+    else
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" \
+            timeout 45 git -C "$WJ_DATA_DIR" "$@"
+    fi
+}
+
+# the union merge driver makes git keep *all* lines when the same file is touched
+# from two machines — exactly right for an append-only log.
+sync_write_gitattributes() {
+    local ga="$WJ_DATA_DIR/.gitattributes"
+    grep -qs 'merge=union' "$ga" 2>/dev/null || printf '*.tsv merge=union\n' >>"$ga"
+}
+
+# stamp ownership on any legacy DD.tsv by renaming it to DD.<actor>.tsv, so a
+# shared repo never has ambiguous (author-less) files. Idempotent.
+sync_migrate_legacy() {
+    local a f base dir target n=0
+    a=$(cur_actor)
+    while IFS= read -r f; do
+        dir=${f%/*}; base=${f##*/}; base=${base%.tsv}
+        target="$dir/$base.$a.tsv"
+        if [[ -e $target ]]; then
+            cat "$f" >>"$target" && rm -f "$f"   # fold a same-day legacy file in
+        else
+            mv "$f" "$target"
+        fi
+        n=$(( n + 1 ))
+    done < <(find "$WJ_DATA_DIR" -type f -regextype posix-extended -regex '.*/[0-9]{2}\.tsv' 2>/dev/null)
+    (( n )) && printf 'wj: stamped %d legacy day file(s) with author %s\n' "$n" "$a" >&2
+    return 0
+}
+
+cmd_sync() {
+    command -v git >/dev/null 2>&1 || die "sync needs git"
+    case ${ARGS[0]:-} in
+        init)   sync_init "${ARGS[1]:-}"; return ;;
+        status) sync_status; return ;;
+        "")     ;;
+        *)      die "sync: unknown subcommand '${ARGS[0]}' (use: sync | sync init <remote> | sync status)" ;;
+    esac
+    [[ -d $WJ_DATA_DIR/.git ]] || die "not a sync repo yet — run: wj sync init <remote-url>"
+    sync_write_gitattributes
+    sync_migrate_legacy
+    _git add -A
+    _git diff --cached --quiet 2>/dev/null || _git commit -q -m "wj: $(cur_actor) $(date +%Y-%m-%dT%H:%M)"
+    local out
+    if _git remote get-url origin >/dev/null 2>&1; then
+        if ! out=$(_git pull --rebase 2>&1); then
+            _git rebase --abort >/dev/null 2>&1 || true
+            die "sync: pull failed — $(printf '%s' "$out" | tail -n1)"
+        fi
+        if ! out=$(_git push 2>&1); then
+            die "sync: push failed — $(printf '%s' "$out" | tail -n1)"
+        fi
+        printf 'synced %s (%s)\n' "$WJ_DATA_DIR" "$(cur_actor)"
+    else
+        printf 'committed locally (no remote — add one with: wj sync init <url>)\n'
+    fi
+}
+
+# wj sync init [remote]: make the data dir a git repo, install the union merge
+# rule, stamp legacy files, and (if a remote is given) wire it up + first sync.
+sync_init() {
+    local remote=$1 br
+    command -v git >/dev/null 2>&1 || die "sync needs git"
+    mkdir -p "$WJ_DATA_DIR"
+    [[ -d $WJ_DATA_DIR/.git ]] || _git init -q
+    br=$(_git symbolic-ref --short HEAD 2>/dev/null || echo main)
+    sync_write_gitattributes
+    sync_migrate_legacy
+    _git add -A
+    _git diff --cached --quiet 2>/dev/null || _git commit -q -m "wj: init $(cur_actor)"
+    [[ -n $actor ]] || printf 'wj: syncing as author "%s" — set `actor =` in config to pin it\n' "$(cur_actor)" >&2
+    if [[ -n $remote ]]; then
+        if _git remote get-url origin >/dev/null 2>&1; then _git remote set-url origin "$remote"
+        else _git remote add origin "$remote"; fi
+        if _git ls-remote --exit-code origin >/dev/null 2>&1; then   # remote has history → merge it
+            _git fetch -q origin || die "sync init: cannot reach $remote"
+            _git pull --rebase --allow-unrelated-histories origin "$br" >/dev/null 2>&1 || true
+        fi
+        _git push -u origin "$br" || die "sync init: push failed (check the remote URL and your auth)"
+        printf 'sync ready in %s (remote: %s)\n' "$WJ_DATA_DIR" "$remote"
+    else
+        printf 'sync ready in %s (local; add a remote with: wj sync init <url>)\n' "$WJ_DATA_DIR"
+    fi
+}
+
+# a one-line summary of the sync state (branch, ahead/behind, dirty)
+sync_status() {
+    [[ -d $WJ_DATA_DIR/.git ]] || { printf 'not a sync repo (run: wj sync init <url>)\n'; return; }
+    local br dirty ahead behind
+    br=$(_git symbolic-ref --short HEAD 2>/dev/null || echo '?')
+    _git diff --quiet 2>/dev/null && _git diff --cached --quiet 2>/dev/null && dirty=clean || dirty=uncommitted
+    if _git rev-parse '@{u}' >/dev/null 2>&1; then
+        ahead=$(_git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+        behind=$(_git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+        printf 'sync: branch %s, %s, ahead %s / behind %s\n' "$br" "$dirty" "$ahead" "$behind"
+    else
+        printf 'sync: branch %s, %s, no upstream\n' "$br" "$dirty"
+    fi
+}
+
 # list open tasks (last event not complete/cancel).
 #   wj ls            -> today (or --date) only
 #   wj ls --days N   -> scan the last N days, with a DATE column
@@ -1224,8 +1344,9 @@ json_status() {
             mins=$(task_minutes "$file" "$id" "$nm"); desc=$(task_desc "$file" "$id")
             tot=$(( tot + mins ))
             (( first )) && first=0 || printf ','
-            printf '{"id":%s,"project":%s,"status":%s,"minutes":%d,"desc":%s,"tags":%s}' \
-                "$(json_str "$id")" "$(json_str "$p")" "$(json_str "$st")" "$mins" "$(json_str "$desc")" \
+            printf '{"id":%s,"actor":%s,"project":%s,"status":%s,"minutes":%d,"desc":%s,"tags":%s}' \
+                "$(json_str "$id")" "$(json_str "$(id_actor "$id")")" "$(json_str "$p")" \
+                "$(json_str "$st")" "$mins" "$(json_str "$desc")" \
                 "$(json_arr "$(task_tags "$file" "$id")")"
         done < <(task_ids "$file")
     fi
@@ -1235,8 +1356,9 @@ json_status() {
 # full event timeline of one task
 json_show() {
     local d=$1 file=$2 id=$3 nm=$4
-    printf '{"id":%s,"date":%s,"project":%s,"status":%s,"desc":%s,"minutes":%d,"tags":%s,"events":[' \
-        "$(json_str "$id")" "$(json_str "$d")" "$(json_str "$(task_project "$file" "$id")")" \
+    printf '{"id":%s,"actor":%s,"date":%s,"project":%s,"status":%s,"desc":%s,"minutes":%d,"tags":%s,"events":[' \
+        "$(json_str "$id")" "$(json_str "$(id_actor "$id")")" "$(json_str "$d")" \
+        "$(json_str "$(task_project "$file" "$id")")" \
         "$(json_str "$(task_status "$file" "$id")")" "$(json_str "$(task_desc "$file" "$id")")" \
         "$(task_minutes "$file" "$id" "$nm")" "$(json_arr "$(task_tags "$file" "$id")")"
     local first=1 ts xid xp evt note want; want=$(qkey "$id")
@@ -1296,8 +1418,8 @@ json_grid() {
             [[ -z $id ]] && continue
             task_cancelled "$file" "$id" && continue
             (( first )) && first=0 || printf ','
-            printf '{"id":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s,"segments":%s}' \
-                "$(json_str "$id")" "$(json_str "$(task_project "$file" "$id")")" \
+            printf '{"id":%s,"actor":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s,"segments":%s}' \
+                "$(json_str "$id")" "$(json_str "$(id_actor "$id")")" "$(json_str "$(task_project "$file" "$id")")" \
                 "$(json_str "$(task_desc "$file" "$id")")" "$(json_str "$(task_status "$file" "$id")")" \
                 "$(task_minutes "$file" "$id" "$nm")" "$(json_arr "$(task_tags "$file" "$id")")" \
                 "$(json_segments "$file" "$id" "$nm")"
@@ -1564,8 +1686,9 @@ cmd_search() {
                 found=1
                 if (( JSON )); then
                     (( first )) && first=0 || printf ','
-                    printf '{"id":%s,"date":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s}' \
-                        "$(json_str "$id")" "$(json_str "$d")" "$(json_str "$proj")" \
+                    printf '{"id":%s,"actor":%s,"date":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s}' \
+                        "$(json_str "$id")" "$(json_str "$(id_actor "$id")")" "$(json_str "$d")" \
+                        "$(json_str "$proj")" \
                         "$(json_str "$desc")" "$(json_str "$st")" "$mins" "$(json_arr "$tags")"
                 else
                     printf '%-12s  %-4s  %-16.16s  %-8s  %7s  %s\n' \
@@ -1636,7 +1759,7 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start continue pause resume complete defer log amend move tag untag cancel undo ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
+    cmds="start continue pause resume complete defer log amend move tag untag cancel undo sync ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
     flags="--at --date --project --from --to --format --by --days --due --json --parallel --auto-pause"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
@@ -1658,6 +1781,8 @@ _wj() {
             else
                 COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") )
             fi ;;
+        sync)
+            (( COMP_CWORD == 2 )) && COMPREPLY=( $(compgen -W "init status" -- "$cur") ) ;;
         drop|due|raise|lower)
             COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") ) ;;
         start)
@@ -1721,6 +1846,17 @@ PENDING (BACKLOG)
   lower <P#>          Move a pending task one step down.
   drop <P#>           Remove a pending task without starting it.
                       (Use `start P#` to promote one into a tracked task.)
+
+SYNC (SHARED / COLLABORATIVE JOURNAL)
+  sync init <url>     Make the data dir a git repo, install the union merge rule,
+                      stamp your author on existing days, wire up the remote, and
+                      do the first push/pull. Each teammate runs this once.
+  sync                Commit local changes, pull (rebase), push. Run it (or let
+                      it run) whenever you want to share/receive work. Reads then
+                      show everyone's tasks (yours bare T#, teammates' actor/T#).
+  sync status         Branch, clean/uncommitted, and ahead/behind counts.
+  Authorship is the `actor` config (default: your git email / $USER). Each author
+  writes their own per-day file, so concurrent work never conflicts.
 
 VIEW & ANALYSIS
   ls                  List currently-open tasks (in-progress / paused / deferred).
@@ -1919,6 +2055,7 @@ main() {
         untag)    cmd_untag ;;
         cancel)   cmd_cancel ;;
         undo)     cmd_undo ;;
+        sync)     cmd_sync ;;
         ls)       cmd_ls ;;
         show)     cmd_show ;;
         status)   cmd_status ;;

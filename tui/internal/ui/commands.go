@@ -68,6 +68,17 @@ func (m Model) loadTags() tea.Cmd {
 	}
 }
 
+func (m Model) loadActor() tea.Cmd {
+	cli := m.cli
+	return func() tea.Msg {
+		name, err := cli.Actor()
+		if err != nil {
+			return actorMsg{}
+		}
+		return actorMsg{name: name}
+	}
+}
+
 func (m Model) loadPending() tea.Cmd {
 	cli := m.cli
 	return func() tea.Msg {

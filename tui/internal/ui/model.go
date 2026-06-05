@@ -66,6 +66,10 @@ type projectsMsg struct{ names []string }
 // tagsMsg carries every tag ever used (for the tag-editor autocomplete).
 type tagsMsg struct{ names []string }
 
+// actorMsg carries the current author handle (to distinguish your tasks from
+// teammates' in a shared log).
+type actorMsg struct{ name string }
+
 // searchMsg carries the results of a global task search. The query is echoed
 // back so a result for a query the user has since edited can be discarded.
 type searchMsg struct {
@@ -185,6 +189,7 @@ type Model struct {
 	liveAt    time.Time  // wall-clock time m.live was fetched
 	projects  []string   // known project names (move autocomplete)
 	tags      []string   // known tag names (tag-editor autocomplete)
+	actor     string     // this user's author handle (collaborative log; "" = solo)
 	tickN     int        // 1s ticks since start; data reloads every dataEveryTicks
 	tlOffset  int        // timeline scroll position
 	autoPause bool       // when true, start/resume pause the project's other running task
@@ -243,7 +248,7 @@ func New(cli wj.Client, from, to, by, confirm string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadTags(), m.loadPending(), tickCmd())
+	return tea.Batch(m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadTags(), m.loadActor(), m.loadPending(), tickCmd())
 }
 
 // currentDay is the YYYY-MM-DD of the focused day column ("" if none).
@@ -267,17 +272,38 @@ type projRow struct {
 	running bool // today's in-progress project (drives the ">" glyph)
 }
 
-// todayRows aggregates today's tracked time (m.live) into Projects-panel rows,
-// honouring the by-project/by-task grouping. Empty when today has no work (or
-// today's status has not loaded), which collapses the panel to the Window list.
+// myTasks is today's live tasks that belong to you (or all of them when the
+// actor is unset / solo / pre-collaborative data). The personal surfaces — the
+// header, the today rollup, and the Today panel section — use this so they show
+// your work, not the whole team's (team rollups live in the Range / Window).
+func (m Model) myTasks() []wj.Task {
+	if m.live == nil {
+		return nil
+	}
+	if m.actor == "" {
+		return m.live.Tasks
+	}
+	out := make([]wj.Task, 0, len(m.live.Tasks))
+	for _, t := range m.live.Tasks {
+		if t.Actor == "" || t.Actor == m.actor {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// todayRows aggregates today's tracked time (your live tasks) into Projects-panel
+// rows, honouring the by-project/by-task grouping. Empty when you have no work
+// today (or status hasn't loaded), which collapses the panel to the Window list.
 func (m Model) todayRows() []projRow {
-	if m.live == nil || len(m.live.Tasks) == 0 {
+	mine := m.myTasks()
+	if len(mine) == 0 {
 		return nil
 	}
 	delta := m.liveDelta() // count an in-progress task up between data reloads
 	if m.by == "task" {
-		rows := make([]projRow, 0, len(m.live.Tasks))
-		for _, t := range m.live.Tasks {
+		rows := make([]projRow, 0, len(mine))
+		for _, t := range mine {
 			label := t.ID + " " + t.Project
 			if t.Desc != "" {
 				label = t.ID + " " + t.Desc
@@ -293,9 +319,9 @@ func (m Model) todayRows() []projRow {
 		return rows
 	}
 	active := m.activeProject()
-	order := make([]string, 0, len(m.live.Tasks))
-	sum := make(map[string]int, len(m.live.Tasks))
-	for _, t := range m.live.Tasks {
+	order := make([]string, 0, len(mine))
+	sum := make(map[string]int, len(mine))
+	for _, t := range mine {
 		if _, seen := sum[t.Project]; !seen {
 			order = append(order, t.Project)
 		}
@@ -434,6 +460,22 @@ func (m Model) selectedTaskID() string {
 		return ""
 	}
 	return ts[m.selTask].ID
+}
+
+// selectedTask returns the focused day's selected task (ok=false if none).
+func (m Model) selectedTask() (wj.GridTask, bool) {
+	ts := m.filteredTasks()
+	if m.selTask < 0 || m.selTask >= len(ts) {
+		return wj.GridTask{}, false
+	}
+	return ts[m.selTask], true
+}
+
+// taskOwned reports whether a task belongs to this user — i.e. you can act on it.
+// Empty actor (solo / pre-collaborative data, or before the actor has loaded)
+// counts as owned, so single-user behaviour is unchanged.
+func (m Model) taskOwned(t wj.GridTask) bool {
+	return t.Actor == "" || m.actor == "" || t.Actor == m.actor
 }
 
 // selectedPendID is the id of the highlighted pending task ("" if none).

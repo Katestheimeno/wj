@@ -166,6 +166,30 @@ Move a pending task one step down.
 .TP
 .BI "drop " P#
 Remove a pending task without starting it.
+.SH SYNC (SHARED JOURNAL)
+Turn the data directory into a shared, multi-author journal over git. Each author
+writes their own per-day file (DD.<actor>.tsv), so concurrent work never
+conflicts; a union merge driver handles the same-author-two-machines case.
+Authorship is the
+.I actor
+config (default: your git email, then $USER).
+.TP
+.BI "sync init " url
+Make the data dir a git repo, install the union merge rule, stamp your author on
+existing day files, wire up the remote, and do the first push/pull. Run once per
+machine.
+.TP
+.B sync
+Commit local changes, pull (rebase), then push. Reads afterwards show everyone's
+tasks \(em yours as bare
+.IR T# ,
+teammates' as
+.IR actor/T# .
+Non-interactive callers (e.g. the wj-tui front-end) never block on an ssh
+passphrase: keep your key in an agent, or sync manually from a shell.
+.TP
+.B sync status
+Branch, clean/uncommitted, and ahead/behind counts.
 .SH OTHER
 .TP
 .B ui

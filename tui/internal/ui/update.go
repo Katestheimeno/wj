@@ -44,6 +44,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tags = msg.names
 		return m, nil
 
+	case actorMsg:
+		m.actor = msg.name
+		return m, nil
+
 	case pendingMsg:
 		if msg.err == nil {
 			m.pending = msg.items
@@ -240,6 +244,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.mutate("undo", "--date", day)
 		}
 		return m, nil
+	case "S":
+		// sync the shared journal (git pull --rebase + push). Non-interactive
+		// here, so it never hangs; the result/error shows in the footer and a
+		// successful pull's new work appears on the next reload.
+		m.notice = "syncing…"
+		return m, m.mutate("sync")
 	case "L":
 		// cycle the panel layout (balanced → spotlight → golden → …); live only,
 		// the startup default comes from the config's layout= / -layout.
@@ -381,11 +391,27 @@ func (m Model) keyTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// isMutationKey reports whether a key drives a state-changing action on the
+// selected task (so it can be gated on a teammate's read-only task).
+func isMutationKey(s string) bool {
+	switch s {
+	case "p", "r", "c", "d", "P", "R", "C", "D", "X", "o", "a", "m", "n", "#", "x":
+		return true
+	}
+	return false
+}
+
 // keyMutation handles mutation keys against the selected task. The bool reports
 // whether the key was consumed (so navigation doesn't also see it). Note: log
 // is bound to "n" (note) so that "l" stays free for drill-in.
 func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	id := m.selectedTaskID()
+	// In a shared log you can only act on your own tasks; consume mutation keys
+	// on a teammate's task with a notice rather than firing a CLI error.
+	if t, ok := m.selectedTask(); ok && !m.taskOwned(t) && isMutationKey(msg.String()) {
+		m.notice = "read-only: " + t.ID + " is " + t.Actor + "'s task"
+		return m, nil, true
+	}
 	switch msg.String() {
 	case "p":
 		next, cmd := m.armOrMutate("pause", []string{id}, false, "pause "+id+"?")

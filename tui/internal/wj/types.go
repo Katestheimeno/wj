@@ -15,6 +15,7 @@ type Status struct {
 // Task is one row of a day's status table.
 type Task struct {
 	ID      string   `json:"id"`
+	Actor   string   `json:"actor"` // owning author (collaborative log); "" = pre-collab data
 	Project string   `json:"project"`
 	Status  string   `json:"status"`
 	Minutes int      `json:"minutes"`
@@ -25,6 +26,7 @@ type Task struct {
 // Show mirrors `wj show <id> --json`: the full event timeline of one task.
 type Show struct {
 	ID      string   `json:"id"`
+	Actor   string   `json:"actor"`
 	Date    string   `json:"date"`
 	Project string   `json:"project"`
 	Status  string   `json:"status"`
@@ -55,6 +57,7 @@ type Grid struct {
 // GridTask is one task's intraday timeline.
 type GridTask struct {
 	ID       string    `json:"id"`
+	Actor    string    `json:"actor"`
 	Project  string    `json:"project"`
 	Desc     string    `json:"desc"`
 	Status   string    `json:"status"`
@@ -94,6 +97,7 @@ type Pending struct {
 // substring, on a specific day. The (ID, Date) pair is enough to jump to it.
 type Found struct {
 	ID      string   `json:"id"`
+	Actor   string   `json:"actor"`
 	Date    string   `json:"date"`
 	Project string   `json:"project"`
 	Desc    string   `json:"desc"`

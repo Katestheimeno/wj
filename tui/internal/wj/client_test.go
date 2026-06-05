@@ -131,6 +131,10 @@ func TestClientMutate(t *testing.T) {
 	if got := st.Tasks[0].Tags; len(got) != 1 || got[0] != "billing" {
 		t.Fatalf("tags round-trip via real CLI: got %v, want [billing]", got)
 	}
+	// the collaborative author handle is present (derived; just assert non-empty)
+	if st.Tasks[0].Actor == "" {
+		t.Fatalf("task should carry an actor (owner) field, got empty")
+	}
 
 	// re-pausing an already-paused task is an idempotent no-op: no error, and
 	// the CLI echoes an "already paused" line so the UI can surface feedback.

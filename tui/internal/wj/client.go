@@ -57,6 +57,16 @@ func (c Client) Projects() ([]string, error) { return c.lines("_projects") }
 // Tags lists every tag ever applied (for the tag-editor autocomplete).
 func (c Client) Tags() ([]string, error) { return c.lines("_tags") }
 
+// Actor returns the current author handle, used to tell your tasks from
+// teammates' in a shared log ("" on error).
+func (c Client) Actor() (string, error) {
+	ls, err := c.lines("_actor")
+	if err != nil || len(ls) == 0 {
+		return "", err
+	}
+	return ls[0], nil
+}
+
 // lines runs an internal list subcommand and returns its non-empty trimmed lines.
 func (c Client) lines(args ...string) ([]string, error) {
 	out, err := c.run(args...)

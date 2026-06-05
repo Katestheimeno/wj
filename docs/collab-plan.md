@@ -65,13 +65,26 @@ union the reads.** No CRDTs, no server, no conflict UI.
 - [ ] Migration: going-collaborative renames legacy `DD.tsv` → `DD.<actor>.tsv` (in 1c).
 - [ ] Add automated multi-actor regression tests.
 
-**1b · Owner in the contract + views**
-- [ ] `actor` in status/grid/show/gantt/search JSON → Go types.
-- [ ] Owner shown in CLI views; TUI colours by person, badges/qualifies foreign ids.
+**1b · Owner in the contract + views** ✅
+- [x] `actor` in status/grid/show/search JSON → Go types (`id_actor` on the CLI).
+- [x] TUI loads its own actor (`wj _actor`); tints teammate tasks by author and
+      shows their ids qualified (`alice/T3`); `show` accepts a qualified id.
+- [x] Mutations gated to your own tasks — a teammate's task is read-only (notice,
+      not a CLI error). Mutating commands stay bare-id/own-only by design.
+- [x] Personal surfaces (header, today rollup, Today panel, active project) scoped
+      to *your* live tasks via `myTasks()` — team rollups stay in the Range/Window.
+- [ ] Owner colour in the Day-gantt rows (only the Tasks list tints today).
 
-**1c · `wj sync`**
-- [ ] `wj sync` = pull --rebase + push, non-interactive + graceful-degradation.
-- [ ] Auto-write `.gitattributes` union rule; `wj sync init <remote>` one-liner.
+**1c · `wj sync`** ✅
+- [x] `wj sync` = add/commit + pull --rebase + push; non-interactive (BatchMode +
+      timeout + `GIT_TERMINAL_PROMPT=0`) so it never hangs, reports auth/network
+      errors cleanly. `wj sync status` shows ahead/behind.
+- [x] `wj sync init <remote>` one-liner (init + union `.gitattributes` + legacy
+      rename + remote + first push/pull, incl. `--allow-unrelated-histories`).
+- [x] Legacy `DD.tsv` → `DD.<actor>.tsv` migration (folds same-day files in).
+- [x] TUI `S` triggers sync (non-interactive → never hangs the UI).
+- [x] Verified end-to-end: two-user union sync + same-author union-merge (no lost
+      events) against a real bare remote.
 
 **1d · Team views**
 - [ ] `wj team` — who's on what right now (today's in-progress across actors).

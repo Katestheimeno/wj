@@ -175,6 +175,8 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `wj search <query>` | Find tasks across **all** recorded days by a case-insensitive substring of the id, project, description, **or tags**. Most-recent first; `--json` for the UI's `/` overlay. |
 | `wj report [flags]` | Aggregate time over a date range, grouped by `--by`. |
 | `wj export [flags]` | Dump raw events as csv/json/tsv over a date range. |
+| `wj sync init <url>` | Turn the data dir into a shared git journal (see [Collaboration](#collaboration-shared-journal)). Run once per machine. |
+| `wj sync` | Share/receive work: commit, pull (rebase), push. `wj sync status` shows ahead/behind. |
 | `wj ui` | Launch the optional `wj-tui` front-end (see [Terminal UI](#terminal-ui-optional)). A bare `wj` opens it too when `interface=ui`. |
 | `wj completion <shell>` | Print a shell-completion script (`bash` or `zsh`). |
 | `wj config` | Print the active config file path. |
@@ -487,6 +489,38 @@ awk -F'\t' '$4=="complete"{print $3}' ~/.local/share/wj/2026/06/*.tsv | sort | u
 
 `export` emits well-formed CSV (RFC-4180 quoting) and JSON (validates as a JSON
 array), so it drops straight into pandas, `jq`, SQLite, or any spreadsheet.
+
+## Collaboration (shared journal)
+
+wj can be a **shared, multi-author work journal** — over plain **git**, no server.
+It works because the log is append-only and *partitioned by author*: each person
+writes their own per-day file (`YYYY/MM/DD.<actor>.tsv`), and reads union every
+author's file. Two people working the same day never touch the same file, so git
+has nothing to conflict on; a `*.tsv merge=union` rule handles even the
+same-person-on-two-machines case by keeping all events.
+
+Set up once per machine, then sync whenever:
+
+```sh
+wj sync init git@github.com:team/journal.git   # one-time: wire up the shared repo
+wj sync                                         # commit + pull --rebase + push
+wj sync status                                  # branch, clean/dirty, ahead/behind
+```
+
+- **Authorship** is the `actor` config (defaults to your git email's local-part,
+  then `$USER`). Pin it with `actor = alice` in the config.
+- After a sync, reads show **everyone's** tasks — yours as bare `T1`, teammates'
+  qualified as `alice/T1`. Project/range rollups (`gantt`, `report`) sum the whole
+  team; your personal views (status header, today) stay yours. You can act on your
+  own tasks; a teammate's is read-only.
+- **Auth:** keep your ssh key in an agent (unlock once) and sync is silent.
+  Non-interactive callers (auto-sync, the TUI's `S`) never hang on a passphrase —
+  they fail cleanly and tell you to unlock. Or use an HTTPS token / passphrase-less
+  deploy key for fully unattended sync.
+- **Privacy:** the synced repo is the *team* journal. Keep private work in a
+  separate, non-synced data dir via `WJ_DATA_DIR`.
+
+In the TUI, press **`S`** to sync.
 
 ## Retroactive entry
 

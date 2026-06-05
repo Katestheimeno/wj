@@ -1669,3 +1669,74 @@ func TestTimelineShowsTags(t *testing.T) {
 		t.Errorf("timeline should render tag chips:\n%s", out)
 	}
 }
+
+func TestTaskOwned(t *testing.T) {
+	m := Model{actor: "me"}
+	if !m.taskOwned(wj.GridTask{Actor: "me"}) {
+		t.Error("your own task should be owned")
+	}
+	if m.taskOwned(wj.GridTask{Actor: "alex"}) {
+		t.Error("a teammate's task should NOT be owned")
+	}
+	if !m.taskOwned(wj.GridTask{Actor: ""}) {
+		t.Error("empty actor (solo/legacy data) should count as owned")
+	}
+	m.actor = "" // actor not loaded yet -> don't block
+	if !m.taskOwned(wj.GridTask{Actor: "alex"}) {
+		t.Error("unloaded actor should not block actions")
+	}
+}
+
+func TestTeammateTaskGating(t *testing.T) {
+	m := drilled() // Day pane, confirmAll
+	m.actor = "me"
+	m.grid.Tasks = []wj.GridTask{
+		{ID: "alex/T1", Actor: "alex", Project: "docs", Desc: "their task", Status: "in-progress"},
+	}
+	m.selTask = 0
+	// every mutation key on a teammate's task is consumed with a notice, no command
+	for _, k := range []string{"p", "r", "c", "d", "x", "a", "m", "#", "o"} {
+		next, cmd, handled := m.keyMutation(keyMsg(k))
+		nm := next.(Model)
+		if !handled || cmd != nil {
+			t.Errorf("%q on a teammate task: handled=%v cmd=%v — want consumed, no cmd", k, handled, cmd)
+		}
+		if nm.notice == "" || nm.confirm.active {
+			t.Errorf("%q should set a read-only notice and NOT arm a confirm/mutation", k)
+		}
+	}
+	// your own task is actionable again (arms a confirm in 'all' mode)
+	m.grid.Tasks = []wj.GridTask{{ID: "T1", Actor: "me", Project: "backend", Status: "in-progress"}}
+	next, _, handled := m.keyMutation(keyMsg("p"))
+	if !handled || !next.(Model).confirm.active {
+		t.Error("'p' on your own task should arm a confirm")
+	}
+}
+
+func TestMyTasksFiltersToOwnActor(t *testing.T) {
+	m := liveModel()
+	m.actor = "me"
+	m.live.Tasks = []wj.Task{
+		{ID: "T1", Actor: "me", Project: "backend", Status: "in-progress", Minutes: 60},
+		{ID: "alex/T1", Actor: "alex", Project: "ops", Status: "in-progress", Minutes: 30},
+		{ID: "T2", Actor: "me", Project: "docs", Status: "completed", Minutes: 20},
+	}
+	if got := len(m.myTasks()); got != 2 {
+		t.Fatalf("myTasks = %d, want 2 (your own only)", got)
+	}
+	// the header/active project is YOUR running project, not alex's ops
+	if got := m.activeProject(); got != "backend" {
+		t.Errorf("activeProject = %q, want backend (yours)", got)
+	}
+	// the Today section excludes the teammate's project
+	for _, r := range m.todayRows() {
+		if r.project == "ops" {
+			t.Error("Today section should exclude a teammate's project (ops)")
+		}
+	}
+	// unset actor (solo / pre-collab) -> all tasks (back-compat)
+	m.actor = ""
+	if got := len(m.myTasks()); got != 3 {
+		t.Errorf("unset actor should return all %d tasks, got %d", 3, got)
+	}
+}
