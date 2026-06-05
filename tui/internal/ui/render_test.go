@@ -42,6 +42,7 @@ func keyMsg(s string) tea.KeyMsg {
 func sampleModel() Model {
 	return Model{
 		by: "project", from: "2026-05-28", to: "2026-06-01", ready: true,
+		confirmLevel: confirmAll, // exercise the confirm guards by default in tests
 		g: &wj.Gantt{
 			From: "2026-05-28", To: "2026-06-01", By: "project",
 			Days: []string{"2026-05-28", "2026-05-29", "2026-05-30", "2026-05-31", "2026-06-01"},
@@ -205,7 +206,7 @@ func drilled() Model {
 func TestDrillDownRender(t *testing.T) {
 	out := drilled().View()
 	// timeline content, panel title, intraday legend, and the now (12:30) marker
-	for _, want := range []string{"09:00", "T1", "backend", "Refactor auth", "started", "completed", "Day — 2026-05-28", "legend:", "▲"} {
+	for _, want := range []string{"09:00", "T1", "backend", "Refactor auth", "started", "completed", "Day — 2026-05-28", "legend:", "^"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("drilled view missing %q\n---\n%s", want, out)
 		}
@@ -336,10 +337,15 @@ func TestInputAndConfirmRender(t *testing.T) {
 
 func TestStartOpensInput(t *testing.T) {
 	m := sampleModel() // range pane
-	next, cmd := m.handleKey(keyMsg("s"))
+	// 's' arms a confirm; confirming with 'y' opens the start prompt
+	m, _ = mustModel(m.handleKey(keyMsg("s")))
+	if !m.confirm.active || !m.confirm.input.active {
+		t.Fatalf("'s' should arm a start confirm, got %+v", m.confirm)
+	}
+	next, cmd := m.handleKey(keyMsg("y"))
 	nm := next.(Model)
 	if !nm.input.active || nm.input.action != "start" {
-		t.Fatalf("'s' should open the start prompt, got %+v", nm.input)
+		t.Fatalf("confirming 's' should open the start prompt, got %+v", nm.input)
 	}
 	if cmd != nil {
 		t.Error("opening the prompt should not issue a command yet")
@@ -348,7 +354,8 @@ func TestStartOpensInput(t *testing.T) {
 
 func TestStartRequiresDescription(t *testing.T) {
 	m := sampleModel()
-	m, _ = mustModel(m.handleKey(keyMsg("s"))) // open the start prompt
+	m, _ = mustModel(m.handleKey(keyMsg("s"))) // arm the start confirm
+	m, _ = mustModel(m.handleKey(keyMsg("y"))) // confirm → open the start prompt
 	// type a bare "@proj" with no task text, then submit
 	m.input.value = "@proj"
 	m, _ = mustModel(m.handleKey(keyMsg("enter")))
@@ -367,10 +374,14 @@ func TestStartRequiresDescription(t *testing.T) {
 
 func TestInputTypingAndSubmit(t *testing.T) {
 	m := drilled()
-	// open amend on the selected task
+	// open amend on the selected task: 'a' arms a confirm, 'y' opens the prompt
 	m, _ = mustModel(m.handleKey(keyMsg("a")))
+	if !m.confirm.active || !m.confirm.input.active {
+		t.Fatalf("'a' should arm an amend confirm, got %+v", m.confirm)
+	}
+	m, _ = mustModel(m.handleKey(keyMsg("y")))
 	if !m.input.active || m.input.action != "amend" || m.input.taskID != "T1" {
-		t.Fatalf("'a' should open amend for T1, got %+v", m.input)
+		t.Fatalf("confirming 'a' should open amend for T1, got %+v", m.input)
 	}
 	// type "hi", then backspace -> "h", then a space + "x" -> "h x"
 	for _, k := range []string{"h", "i"} {
@@ -390,8 +401,12 @@ func TestInputTypingAndSubmit(t *testing.T) {
 func TestInputEscCancels(t *testing.T) {
 	m := drilled()
 	m, _ = mustModel(m.handleKey(keyMsg("m")))
+	if !m.confirm.active || !m.confirm.input.active {
+		t.Fatal("'m' should arm a move confirm")
+	}
+	m, _ = mustModel(m.handleKey(keyMsg("y")))
 	if !m.input.active {
-		t.Fatal("'m' should open move prompt")
+		t.Fatal("confirming 'm' should open move prompt")
 	}
 	m, _ = mustModel(m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}))
 	if m.input.active {
@@ -445,21 +460,29 @@ func TestBaseArgs(t *testing.T) {
 func TestTodayMutationIsImmediate(t *testing.T) {
 	m := drilled()
 	m.today = m.currentDay() // focused day is "today"
-	next, cmd := mustModel(m.handleKey(keyMsg("p")))
+	m, _ = mustModel(m.handleKey(keyMsg("p")))
+	if !m.confirm.active {
+		t.Fatal("'p' should arm a confirm")
+	}
+	next, cmd := mustModel(m.handleKey(keyMsg("y")))
 	if next.input.active {
 		t.Error("a today mutation must not open a time prompt")
 	}
 	if cmd == nil {
-		t.Error("a today mutation should issue immediately")
+		t.Error("a today mutation should issue immediately after confirming")
 	}
 }
 
 func TestPastDayMutationPromptsForTime(t *testing.T) {
 	m := drilled()         // focused day 2026-05-28
 	m.today = "2026-06-01" // …which is in the past
-	next, cmd := mustModel(m.handleKey(keyMsg("p")))
+	m, _ = mustModel(m.handleKey(keyMsg("p")))
+	if !m.confirm.active {
+		t.Fatal("'p' should arm a confirm")
+	}
+	next, cmd := mustModel(m.handleKey(keyMsg("y")))
 	if !next.input.active || next.input.action != "at" {
-		t.Fatalf("past-day pause should open a time prompt, got %+v", next.input)
+		t.Fatalf("past-day pause should open a time prompt after confirming, got %+v", next.input)
 	}
 	if cmd != nil {
 		t.Error("must not mutate before a time is given")
@@ -487,9 +510,13 @@ func TestTimedMutationPromptsEvenOnToday(t *testing.T) {
 	m := drilled()
 	m.today = m.currentDay() // focused day is "today" — a plain 'p' would run now
 	// Shift+P asks for an explicit time instead of acting immediately.
-	next, cmd := mustModel(m.handleKey(keyMsg("P")))
+	m, _ = mustModel(m.handleKey(keyMsg("P")))
+	if !m.confirm.active || !m.confirm.atTime {
+		t.Fatalf("Shift+P should arm a timed confirm, got %+v", m.confirm)
+	}
+	next, cmd := mustModel(m.handleKey(keyMsg("y")))
 	if !next.input.active || next.input.action != "at" {
-		t.Fatalf("Shift+P should open a time prompt, got %+v", next.input)
+		t.Fatalf("confirming Shift+P should open a time prompt, got %+v", next.input)
 	}
 	if cmd != nil {
 		t.Error("must not mutate before a time is given")
@@ -590,10 +617,14 @@ func TestMutationKeyGatedToDetailPane(t *testing.T) {
 	if cmd != nil {
 		t.Error("'c' in range pane should not trigger a mutation")
 	}
-	// in the day pane with a selection, 'p' issues a command
+	// in the day pane with a selection, 'p' arms a confirm; 'y' issues the command
 	d := drilled()
-	if _, cmd := d.handleKey(keyMsg("p")); cmd == nil {
-		t.Error("'p' on a selected task should issue a mutation command")
+	d, _ = mustModel(d.handleKey(keyMsg("p")))
+	if !d.confirm.active {
+		t.Fatal("'p' on a selected task should arm a confirm")
+	}
+	if _, cmd := d.handleKey(keyMsg("y")); cmd == nil {
+		t.Error("confirming 'p' should issue a mutation command")
 	}
 }
 
@@ -694,9 +725,13 @@ func TestRangeSpanPresets(t *testing.T) {
 func TestLogKeyOpensPrompt(t *testing.T) {
 	m := drilled()
 	m.today = m.currentDay()
-	n, _ := mustModel(m.handleKey(keyMsg("n")))
+	m, _ = mustModel(m.handleKey(keyMsg("n")))
+	if !m.confirm.active || !m.confirm.input.active {
+		t.Fatalf("'n' should arm a log confirm, got %+v", m.confirm)
+	}
+	n, _ := mustModel(m.handleKey(keyMsg("y")))
 	if !n.input.active || n.input.action != "log" {
-		t.Fatalf("'n' should open a log (note) prompt, got %+v", n.input)
+		t.Fatalf("confirming 'n' should open a log (note) prompt, got %+v", n.input)
 	}
 }
 
@@ -726,9 +761,16 @@ func TestRunningHeader(t *testing.T) {
 	}}
 	m.liveAt = time.Now()
 	h := m.runningHeader()
-	if !strings.Contains(h, "▶") || !strings.Contains(h, "T1") || !strings.Contains(h, "Refactor auth") {
+	// default (icons off) uses the ASCII running marker
+	if !strings.Contains(h, "> T1") || !strings.Contains(h, "Refactor auth") {
 		t.Errorf("running header = %q", h)
 	}
+	// with icons on, the same spot shows the play glyph
+	SetIcons("on")
+	if h := m.runningHeader(); !strings.Contains(h, "▶") {
+		t.Errorf("icons on: running header should use ▶, got %q", h)
+	}
+	SetIcons("off")
 	// no running task -> idle
 	m.live.Tasks[0].Status = "paused"
 	if h := m.runningHeader(); !strings.Contains(h, "idle") {
@@ -857,8 +899,12 @@ func pendingModel() Model {
 
 func TestPendingAddOpensPrompt(t *testing.T) {
 	m, _ := mustModel(pendingModel().handleKey(keyMsg("a")))
+	if !m.confirm.active || !m.confirm.input.active {
+		t.Fatalf("'a' should arm an add confirm, got %+v", m.confirm)
+	}
+	m, _ = mustModel(m.handleKey(keyMsg("y")))
 	if !m.input.active || m.input.action != "add" {
-		t.Fatalf("'a' should open the add prompt, got %+v", m.input)
+		t.Fatalf("confirming 'a' should open the add prompt, got %+v", m.input)
 	}
 	// typing + enter issues `add <desc>` (a plain mutate, no date prompt)
 	for _, k := range []string{"H", "i"} {
@@ -871,12 +917,16 @@ func TestPendingAddOpensPrompt(t *testing.T) {
 }
 
 func TestPendingPromoteAndDrop(t *testing.T) {
-	// Enter promotes the selected pending task (P1)
-	m := pendingModel()
-	if _, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
-		t.Error("enter on a pending task should issue a start (promote)")
+	// Enter arms a promote confirm on the selected pending task (P1); 'y' runs it
+	promo, _ := mustModel(pendingModel().handleKey(tea.KeyMsg{Type: tea.KeyEnter}))
+	if !promo.confirm.active || promo.confirm.verb != "start" || !promo.confirm.raw {
+		t.Fatalf("enter should arm a raw promote confirm, got %+v", promo.confirm)
+	}
+	if _, cmd := promo.handleKey(keyMsg("y")); cmd == nil {
+		t.Error("confirming enter should issue a start (promote)")
 	}
 	// 'x' opens a *raw* drop confirm (no --date round-trip)
+	m := pendingModel()
 	m, _ = mustModel(m.handleKey(keyMsg("x")))
 	if !m.confirm.active || m.confirm.verb != "drop" || !m.confirm.raw {
 		t.Fatalf("'x' should arm a raw drop confirm, got %+v", m.confirm)
@@ -889,10 +939,14 @@ func TestPendingPromoteAndDrop(t *testing.T) {
 
 func TestPendingDueAndReorder(t *testing.T) {
 	m := pendingModel()
-	// 'd' opens the due prompt targeting the selected id
-	d, _ := mustModel(m.handleKey(keyMsg("d")))
+	// 'd' arms a confirm; 'y' opens the due prompt targeting the selected id
+	dc, _ := mustModel(m.handleKey(keyMsg("d")))
+	if !dc.confirm.active || !dc.confirm.input.active {
+		t.Fatalf("'d' should arm a due confirm, got %+v", dc.confirm)
+	}
+	d, _ := mustModel(dc.handleKey(keyMsg("y")))
 	if !d.input.active || d.input.action != "pdue" || d.input.taskID != "P1" {
-		t.Fatalf("'d' should open a due prompt for P1, got %+v", d.input)
+		t.Fatalf("confirming 'd' should open a due prompt for P1, got %+v", d.input)
 	}
 	// ']' lowers and follows the item
 	m.selPend = 0
@@ -1061,7 +1115,7 @@ func TestSetLayout(t *testing.T) {
 	if defaultLayout != want {
 		t.Errorf("unknown/empty SetLayout should not change defaultLayout (= %d)", defaultLayout)
 	}
-	if got := New(wj.Client{}, "", "", "").layout; got != want {
+	if got := New(wj.Client{}, "", "", "", "").layout; got != want {
 		t.Errorf("New should adopt defaultLayout, got %d want %d", got, want)
 	}
 }
@@ -1198,5 +1252,348 @@ func TestSidebarSideRender(t *testing.T) {
 	}
 	if strings.Index(right, "Range") > strings.Index(right, "Projects") {
 		t.Errorf("sidebar=right: Range should come before Projects")
+	}
+}
+
+// liveModel is a sampleModel with today's live status populated, so the Projects
+// panel shows both the Today and Window sections. today (2026-06-01) is the last
+// day of the gantt range, so a Today selection can jump to it.
+func liveModel() Model {
+	m := sampleModel()
+	m.today = "2026-06-01"
+	m.live = &wj.Status{Date: "2026-06-01", Tasks: []wj.Task{
+		{ID: "T1", Project: "backend", Status: "in-progress", Minutes: 120},
+		{ID: "T2", Project: "frontend", Status: "completed", Minutes: 45},
+		{ID: "T3", Project: "backend", Status: "paused", Minutes: 30},
+	}}
+	return m
+}
+
+func TestProjectsTwoSections(t *testing.T) {
+	m := liveModel()
+	rows := m.projRows()
+	// Today section (aggregated by project, first-seen order) leads, then the
+	// Window section ("All" + gantt rows).
+	if len(rows) != 5 {
+		t.Fatalf("projRows = %d rows, want 5: %+v", len(rows), rows)
+	}
+	if !rows[0].today || rows[0].project != "backend" || rows[0].minutes != 150 {
+		t.Errorf("row0 = %+v, want today backend 150 (120+30)", rows[0])
+	}
+	if !rows[0].running {
+		t.Error("backend has the in-progress task → should be flagged running")
+	}
+	if !rows[1].today || rows[1].project != "frontend" || rows[1].minutes != 45 {
+		t.Errorf("row1 = %+v, want today frontend 45", rows[1])
+	}
+	if rows[2].today || !rows[2].isAll {
+		t.Errorf("row2 = %+v, want the Window All entry", rows[2])
+	}
+	if m.allRow() != 2 {
+		t.Errorf("allRow = %d, want 2", m.allRow())
+	}
+	// both section headers render
+	out := m.renderProjects(30, 100)
+	for _, want := range []string{"Today", "Window"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderProjects missing %q header:\n%s", want, out)
+		}
+	}
+}
+
+func TestNoLiveNoTodaySection(t *testing.T) {
+	// With no live status, the panel collapses to the Window list and shows no
+	// section headers (unchanged from the single-section behavior).
+	out := sampleModel().renderProjects(30, 100)
+	if strings.Contains(out, "Today") {
+		t.Errorf("no live status should mean no Today header:\n%s", out)
+	}
+}
+
+func TestProjectsEmptyState(t *testing.T) {
+	// no live status and no range rows → the panel shows the empty-state message,
+	// not a stray synthetic "All" row.
+	m := sampleModel()
+	m.g.Rows = nil
+	if out := m.renderProjects(30, 100); !strings.Contains(out, "no tracked time") {
+		t.Errorf("empty dataset should render the no-tracked-time message:\n%s", out)
+	}
+	// but with today work present, the panel still renders even when the range is empty.
+	m2 := liveModel()
+	m2.g.Rows = nil
+	if out := m2.renderProjects(30, 100); strings.Contains(out, "no tracked time") {
+		t.Errorf("today work should render rows even with an empty range:\n%s", out)
+	}
+}
+
+func TestProjectFilterTodayRow(t *testing.T) {
+	m := liveModel()
+	m.focusedRow = 1 // today frontend
+	if !m.selectedToday() {
+		t.Error("row 1 should be in the Today section")
+	}
+	if got := m.projectFilter(); got != "frontend" {
+		t.Errorf("projectFilter = %q, want frontend", got)
+	}
+}
+
+func TestSectionToggleKey(t *testing.T) {
+	// T from a Today row jumps to the Window "All" entry…
+	m := liveModel()
+	m.focusedRow = 0 // today backend
+	u, _ := m.handleKey(keyMsg("T"))
+	if got := u.(Model).focusedRow; got != m.allRow() {
+		t.Errorf("T from Today should land on All (%d), got %d", m.allRow(), got)
+	}
+	// …and from a Window row back to the first Today row.
+	m2 := liveModel()
+	m2.focusedRow = 3 // window backend
+	u2, _ := m2.handleKey(keyMsg("T"))
+	if got := u2.(Model).focusedRow; got != 0 {
+		t.Errorf("T from Window should land on the first Today row (0), got %d", got)
+	}
+}
+
+func TestTodaySelectionJumpsToToday(t *testing.T) {
+	m := liveModel()
+	m.focusedDay = 0          // 2026-05-28, a past day
+	m.focusedRow = m.allRow() // start on the Window All entry (index 2)
+	// k moves up into the Today section, which should jump the day view to today.
+	u, _ := m.handleKey(keyMsg("k"))
+	nm := u.(Model)
+	if !nm.selectedToday() {
+		t.Fatalf("k should move into the Today section, focusedRow = %d", nm.focusedRow)
+	}
+	if nm.focusedDay != 4 { // index of 2026-06-01 (today) in g.Days
+		t.Errorf("selecting a Today row should jump focusedDay to today (4), got %d", nm.focusedDay)
+	}
+}
+
+func TestWindowSelectionSurvivesLiveReload(t *testing.T) {
+	m := liveModel()
+	m.focusedRow = 4 // window meetings
+	if m.projectFilter() != "meetings" {
+		t.Fatalf("setup: filter = %q, want meetings", m.projectFilter())
+	}
+	// a live refresh that grows the Today section must not shift the window
+	// selection (it is re-anchored by identity, not raw index).
+	u, _ := m.Update(liveMsg{s: &wj.Status{Date: "2026-06-01", Tasks: []wj.Task{
+		{ID: "T9", Project: "newproj", Status: "in-progress", Minutes: 10},
+		{ID: "T1", Project: "backend", Minutes: 150},
+		{ID: "T2", Project: "frontend", Minutes: 45},
+	}}})
+	if got := u.(Model).projectFilter(); got != "meetings" {
+		t.Errorf("window selection should survive a live reload, got %q", got)
+	}
+}
+
+func TestParseConfirmLevel(t *testing.T) {
+	cases := map[string]confirmLevel{
+		"all": confirmAll, "destructive": confirmDestructive, "off": confirmOff,
+		"none": confirmOff, "": confirmDestructive, "bogus": confirmDestructive,
+	}
+	for in, want := range cases {
+		if got := parseConfirmLevel(in); got != want {
+			t.Errorf("parseConfirmLevel(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestConfirmLevels(t *testing.T) {
+	// off: nothing confirms — even the destructive cancel runs straight away
+	off := drilled()
+	off.confirmLevel = confirmOff
+	off.today = off.currentDay() // so issueMutation runs immediately
+	if u, cmd := mustModel(off.handleKey(keyMsg("p"))); u.confirm.active || cmd == nil {
+		t.Errorf("off: 'p' should run immediately, confirm=%v cmd=%v", u.confirm.active, cmd)
+	}
+	if u, cmd := mustModel(off.handleKey(keyMsg("x"))); u.confirm.active || cmd == nil {
+		t.Errorf("off: 'x' (cancel) should run immediately, confirm=%v cmd=%v", u.confirm.active, cmd)
+	}
+
+	// destructive: only the void/drop actions confirm; pause runs immediately
+	des := drilled()
+	des.confirmLevel = confirmDestructive
+	des.today = des.currentDay()
+	if u, cmd := mustModel(des.handleKey(keyMsg("p"))); u.confirm.active || cmd == nil {
+		t.Errorf("destructive: 'p' should not confirm")
+	}
+	if u, _ := mustModel(des.handleKey(keyMsg("x"))); !u.confirm.active || u.confirm.verb != "cancel" {
+		t.Errorf("destructive: 'x' should arm a cancel confirm")
+	}
+
+	// all: even pause confirms
+	all := drilled()
+	all.confirmLevel = confirmAll
+	if u, _ := mustModel(all.handleKey(keyMsg("p"))); !u.confirm.active || u.confirm.verb != "pause" {
+		t.Errorf("all: 'p' should arm a pause confirm")
+	}
+}
+
+func TestProjectsSectionSubtotals(t *testing.T) {
+	// today total = backend 150 + frontend 45 = 195m = 3h15m, shown in the header
+	out := liveModel().renderProjects(40, 100)
+	if !strings.Contains(out, "3h15m") {
+		t.Errorf("Today header should show its subtotal 3h15m:\n%s", out)
+	}
+}
+
+func TestTodayLiveCounter(t *testing.T) {
+	m := liveModel()
+	m.liveAt = time.Now().Add(-3 * time.Minute) // status fetched 3m ago
+	var backend int
+	for _, r := range m.todayRows() {
+		if r.project == "backend" {
+			backend = r.minutes
+		}
+	}
+	// backend has the in-progress task (T1), so it counts up past the stored 150
+	if backend < 152 {
+		t.Errorf("running project should count up since liveAt: backend = %d, want >= ~153", backend)
+	}
+}
+
+func TestUndoKey(t *testing.T) {
+	if _, cmd := drilled().handleKey(keyMsg("u")); cmd == nil {
+		t.Error("'u' should issue an undo command on the focused day")
+	}
+}
+
+func TestRuneDeleteWordBefore(t *testing.T) {
+	cases := []struct {
+		s       string
+		i       int
+		wantS   string
+		wantCur int
+	}{
+		{"hello world", 11, "hello ", 6},  // delete the last word
+		{"hello world", 6, "world", 0},    // cursor after "hello " eats the space + "hello"
+		{"foo bar baz", 7, "foo  baz", 4}, // delete a middle word, keep the tail
+		{"one", 3, "", 0},                 // single word -> empty
+		{"", 0, "", 0},                    // empty is a no-op
+		{"trailing   ", 11, "", 0},        // eats whitespace then the word
+	}
+	for _, c := range cases {
+		gotS, gotCur := runeDeleteWordBefore(c.s, c.i)
+		if gotS != c.wantS || gotCur != c.wantCur {
+			t.Errorf("runeDeleteWordBefore(%q,%d) = (%q,%d), want (%q,%d)",
+				c.s, c.i, gotS, gotCur, c.wantS, c.wantCur)
+		}
+	}
+}
+
+func TestCtrlWDeletesWordInPrompt(t *testing.T) {
+	m := sampleModel()
+	m.input = inputMode{active: true, action: "start", value: "fix the bug", cursor: 11}
+	u, _ := mustModel(m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlW}))
+	if u.input.value != "fix the " || u.input.cursor != 8 {
+		t.Errorf("Ctrl+W = (%q,%d), want (%q,8)", u.input.value, u.input.cursor, "fix the ")
+	}
+	// Ctrl+Backspace arrives as Ctrl+H on most terminals
+	u2, _ := mustModel(u.handleKey(tea.KeyMsg{Type: tea.KeyCtrlH}))
+	if u2.input.value != "fix " {
+		t.Errorf("Ctrl+H = %q, want %q", u2.input.value, "fix ")
+	}
+}
+
+func TestHelpOverlayDocumentsNewActions(t *testing.T) {
+	out := sampleModel().helpOverlay()
+	for _, want := range []string{
+		"Today and Window", // T section toggle
+		"undo the last",    // u undo
+		"confirm`",         // confirm config note (rendered as `confirm`)
+		"Ctrl+W",           // word delete in prompts
+		"deletes a word",
+		"Text prompts", // the editing section header
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("? help overlay missing %q", want)
+		}
+	}
+}
+
+func TestPendingDetailShowsFullText(t *testing.T) {
+	m := pendingModel()
+	m.pane = panePending
+	m.selPend = 0 // P1: "Fix invoice", project Acme, due 2026-06-01 (overdue vs today 2026-06-02)
+	body := m.renderPendingDetail(40, 100)
+	for _, want := range []string{"P1", "Acme", "Fix invoice", "due"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("pending detail missing %q:\n%s", want, body)
+		}
+	}
+	// a long description must appear in full (wrapped), not truncated with an ellipsis
+	m.pending[0].Desc = "fix the content blocks fonts so they take the right size on mobile and desktop"
+	body = m.renderPendingDetail(30, 100)
+	if !strings.Contains(stripANSI(body), "desktop") {
+		t.Errorf("long description should wrap and show its tail:\n%s", body)
+	}
+	// the main column swaps the Timeline panel for the Pending detail when focused
+	full := m.View()
+	if !strings.Contains(full, "Pending · P1") {
+		t.Errorf("focusing Pending should title the detail panel 'Pending · P1'")
+	}
+}
+
+func TestIconToggle(t *testing.T) {
+	defer SetIcons("off") // restore the universal default for other tests
+
+	// default (off) keeps the ASCII markers
+	SetIcons("off")
+	if g, _ := statusGlyph("in-progress"); g != ">" {
+		t.Errorf("icons off: running glyph = %q, want %q", g, ">")
+	}
+	if g, _ := statusGlyph("paused"); g != "=" {
+		t.Errorf("icons off: paused glyph = %q, want %q", g, "=")
+	}
+
+	// on swaps in the Nerd-Font icons (PUA codepoints)
+	SetIcons("on")
+	if g, _ := statusGlyph("in-progress"); g != "" {
+		t.Errorf("icons on: running glyph = %q (%U), want play \\uf04b", g, []rune(g))
+	}
+	if g, _ := statusGlyph("completed"); g != "" {
+		t.Errorf("icons on: completed glyph = %q, want check \\uf00c", g)
+	}
+	// an unknown mode is treated as off
+	SetIcons("garbage")
+	if g, _ := statusGlyph("paused"); g != "=" {
+		t.Errorf("unknown icons mode should fall back to ASCII, got %q", g)
+	}
+
+	// the choice flows through to actual rendering (drilled's T1 is completed)
+	SetIcons("on")
+	if out := drilled().renderTasks(40, 100); !strings.Contains(out, "") {
+		t.Errorf("icons on: task list should render the Nerd-Font check glyph")
+	}
+	SetIcons("off")
+	if out := drilled().renderTasks(40, 100); !strings.Contains(out, "x ") {
+		t.Errorf("icons off: task list should render the ASCII 'x' glyph")
+	}
+}
+
+func TestIndicatorsRespectIconToggle(t *testing.T) {
+	defer SetIcons("off")
+
+	m := sampleModel()
+	m.autoPause = false
+	// pause badge: ASCII when off, glyph when on
+	SetIcons("off")
+	if b := m.pauseBadge(); !strings.Contains(b, "|| parallel") {
+		t.Errorf("icons off: pause badge = %q, want ASCII '|| parallel'", b)
+	}
+	SetIcons("on")
+	if b := m.pauseBadge(); !strings.Contains(b, "∥ parallel") {
+		t.Errorf("icons on: pause badge = %q, want '∥ parallel'", b)
+	}
+
+	// rollup: a space sits between the glyph and the count
+	SetIcons("off")
+	r := sampleModel()
+	r.live = &wj.Status{Tasks: []wj.Task{
+		{Status: "in-progress"}, {Status: "in-progress"}, {Status: "completed"},
+	}, TotalMinutes: 120}
+	if roll := r.todayRollup(); !strings.Contains(roll, "> 2") {
+		t.Errorf("rollup should space the glyph from the count ('> 2'), got %q", roll)
 	}
 }

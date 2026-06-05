@@ -36,6 +36,8 @@ auto_pause="off"        # on | off — on start/resume, auto-pause a running tas
 accent="141"            # wj-tui border/header color: 256-color code, #hex, or name
 layout="balanced"       # wj-tui panel layout: balanced | spotlight | golden | custom (⇧L cycles)
 sidebar="left"          # wj-tui sidebar side: left | right
+confirm="destructive"   # wj-tui y/n guard before actions: all | destructive | off
+icons="off"             # wj-tui status markers: on (Nerd-Font icons) | off (ASCII)
 layout_sidebar=""       # custom layout: sidebar width %, e.g. 28 (empty = preset's)
 layout_split=""         # custom layout: panel weights focused,hi,lo, e.g. 60,25,15
 # wj-tui per-panel title colors (each its own, so the panels stay distinct):
@@ -70,7 +72,7 @@ self_path() {
 # config file can neither inject arbitrary shell variables nor run commands —
 # unlike the old `source`-the-file approach).
 _CFG_KEYS=" shift_start shift_end slot_minutes round totals default_project \
-auto_pause interface accent layout sidebar layout_sidebar layout_split \
+auto_pause interface accent layout sidebar confirm icons layout_sidebar layout_split \
 color_projects color_tasks color_pending color_range color_day color_timeline "
 
 seed_config() {
@@ -105,6 +107,12 @@ accent = $accent
 layout = $layout
 # Which side the lists column sits on: left | right.
 sidebar = $sidebar
+# wj-tui y/n confirm guard before actions: all (every action) | destructive
+# (only cancel/void + drop) | off (none; 'u' undo is the safety net).
+confirm = $confirm
+# wj-tui status markers: on uses Nerd-Font icons (needs a patched font), off
+# uses the universal ASCII set (> running, = paused, » deferred, x done).
+icons = $icons
 # Optional 'custom' layout proportions (then set layout = custom):
 layout_sidebar = $layout_sidebar   # sidebar width %, e.g. 28
 layout_split   = $layout_split     # focused,hi,lo weights, e.g. 60,25,15
@@ -762,6 +770,25 @@ cmd_cancel() {
     in_status "$file" "$id" cancelled && { printf '%s  already cancelled\n' "$id"; return 0; }
     append_event "$ts" "$id" "$(task_project "$file" "$id")" cancel ""
     printf '%s  %s  cancelled (voided — hidden from status/grid/report)\n' "$id" "${ts:11:5}"
+}
+
+# undo the most recent logged event on a day (today, or --date) by dropping the
+# day file's last line. The event log is append-only, so this is a literal "take
+# back the last thing I recorded" — start/pause/resume/complete/defer/cancel/
+# amend/move/log all become undoable, one step at a time. Note: `continue` writes
+# two events (a start + a lineage note), so undoing it takes two presses.
+cmd_undo() {
+    local d=${ON:-$TODAY} file last ts id proj evt note tmp
+    file=$(day_file "$d")
+    [[ -s $file ]] || die "nothing to undo on $d"
+    last=$(tail -n 1 "$file")
+    [[ -n $last ]] || die "nothing to undo on $d"
+    tmp=$(mktemp "${file}.XXXX") || die "undo: cannot create a temp file"
+    sed '$d' "$file" >"$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; die "undo: failed to rewrite $file"; }
+    [[ -s $file ]] || rm -f "$file"          # drop an emptied day file
+    _R_FILE="__stale__"                       # invalidate the replay cache
+    IFS=$'\t' read -r ts id proj evt note <<<"$last"
+    printf '%s  %s  undid %s%s\n' "$id" "${ts:11:5}" "$evt" "${note:+ — $note}"
 }
 
 cmd_complete() {
@@ -1435,7 +1462,7 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start continue pause resume complete defer log amend move cancel ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
+    cmds="start continue pause resume complete defer log amend move cancel undo ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
     flags="--at --date --project --from --to --format --by --days --due --json --parallel --auto-pause"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
@@ -1496,6 +1523,8 @@ TASK COMMANDS
   move  [id] <proj>   Re-home a task to another project (fix wrong auto-detection).
   cancel [id]         Void a mistaken task: 0 time, hidden from status/grid/report
                       (kept in the raw log / export for audit).
+  undo                Take back the last logged event on the day (today, or --date)
+                      — drops the log's last line. Repeat to walk further back.
 
 PENDING (BACKLOG)
   add <desc>          Add a not-yet-started task to the backlog (id P1, P2, ...).
@@ -1586,6 +1615,8 @@ CONFIG  (~/.config/wj/cfg — INI [sections], created on first run)
   accent                    wj-tui focused-panel border color        (141)
   layout                    wj-tui panels: balanced|spotlight|golden (balanced)
   sidebar                   wj-tui sidebar side: left | right        (left)
+  confirm                   wj-tui y/n guard: all|destructive|off    (destructive)
+  icons                     wj-tui status markers: on|off            (off)
   layout_sidebar            custom layout sidebar width %, e.g. 28    ()
   layout_split              custom layout weights focused,hi,lo      ()
   color_projects            per-panel title colors in wj-tui — one   (39)
@@ -1648,7 +1679,7 @@ main() {
     # mutating commands take a process-wide lock so concurrent invocations can't
     # interleave their read-derive-append sequences (see acquire_lock).
     case $cmd in
-        start|continue|pause|resume|complete|defer|log|amend|move|cancel|add|drop|due|raise|lower)
+        start|continue|pause|resume|complete|defer|log|amend|move|cancel|undo|add|drop|due|raise|lower)
             acquire_lock ;;
     esac
     case $cmd in
@@ -1658,6 +1689,8 @@ main() {
             if [[ $interface == ui ]] && command -v wj-tui >/dev/null 2>&1; then
                 local -a uiargs=(-wj "$(self_path)")
                 [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
+                [[ -n ${confirm:-} ]] && uiargs+=(-confirm "$confirm")
+                [[ -n ${icons:-} ]] && uiargs+=(-icons "$icons")
                 [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
                 [[ -n ${sidebar:-} ]] && uiargs+=(-sidebar "$sidebar")
                 [[ -n ${layout_sidebar:-} ]] && uiargs+=(-layout-sidebar "$layout_sidebar")
@@ -1677,6 +1710,8 @@ main() {
             [[ -n $TO ]]   && uiargs+=(-to "$TO")
             [[ -n $BY ]]   && uiargs+=(-by "$BY")
             [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
+            [[ -n ${confirm:-} ]] && uiargs+=(-confirm "$confirm")
+            [[ -n ${icons:-} ]] && uiargs+=(-icons "$icons")
             [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
             [[ -n ${sidebar:-} ]] && uiargs+=(-sidebar "$sidebar")
             [[ -n ${layout_sidebar:-} ]] && uiargs+=(-layout-sidebar "$layout_sidebar")
@@ -1695,6 +1730,7 @@ main() {
         amend)    cmd_amend ;;
         move)     cmd_move ;;
         cancel)   cmd_cancel ;;
+        undo)     cmd_undo ;;
         ls)       cmd_ls ;;
         show)     cmd_show ;;
         status)   cmd_status ;;

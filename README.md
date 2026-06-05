@@ -163,6 +163,7 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `wj amend [id] <desc>` | Replace a task's description (running task, or a given id). Appends an event — history is never rewritten. |
 | `wj move [id] <proj>` | Re-home a task to another project (fix wrong auto-detection). |
 | `wj cancel [id]` | Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw log for audit). |
+| `wj undo` | Take back the last logged event on a day (today, or `--date`) — drops the log's last line. Repeat to walk further back. (`continue` writes two events, so undoing a carry-over takes two passes.) |
 | `wj ls` | List currently-open tasks (in-progress / paused / deferred). Today by default; `--days N` scans the last N days (adds a DATE column) to catch timers left running earlier. |
 | `wj show <id>` | Full timeline of one task: start, notes, pauses/resumes, renames, moves, total time and status. Today by default; `--date` for a past day. |
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
@@ -282,6 +283,8 @@ version is migrated to `cfg` automatically on first run (the original is kept as
 | `accent` | `141` | `wj-tui`'s border/header color — the focused panel's border. A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
 | `layout` | `balanced` | `wj-tui`'s panel layout: `balanced`, `spotlight` (focused panel dominates), `golden` (wider sidebar, uneven splits), or `custom` (see below). Shift+L cycles them live; on a too-small terminal it auto-falls back to `balanced`. |
 | `sidebar` | `left` | Which side the `wj-tui` lists column sits on: `left` or `right`. |
+| `confirm` | `destructive` | `wj-tui`'s y/n guard before an action: `all` (every action confirms), `destructive` (only `cancel`/void and pending `drop`), or `off` (none — `u` undo is the safety net). |
+| `icons` | `off` | `wj-tui`'s status markers and indicators (the `>`/`=`/`»`/`x` task glyphs, the running-task marker, pause-mode badge, now-marker, scroll/`more` arrows, etc.). `off` keeps everything in a universal ASCII set that renders in any font; `on` uses Nerd-Font icons (needs a [patched font](https://www.nerdfonts.com)). A terminal app can't detect a font's glyphs, so this is an explicit opt-in rather than auto-detection. |
 | `layout_sidebar` / `layout_split` | — | Define a `custom` layout: `layout_sidebar` is the sidebar width percent (e.g. `28`); `layout_split` is the panel weights `focused,hi,lo` (e.g. `60,25,15` — the focused panel gets 60% of its column, the other two split the rest 25:15). Select with `layout=custom`. |
 | `color_projects` / `color_tasks` / `color_pending` / `color_range` / `color_day` / `color_timeline` | `39` / `214` / `170` / `78` / `45` / `180` | `wj-tui`'s per-panel title colors — each panel keeps its own so they stay visually distinct. Same value formats as `accent`. |
 
@@ -321,15 +324,22 @@ Projects/Tasks/Timeline/Pending, `←`/`→` step days, `g`/`G` jump to first/la
 
 Sidebar:
 
-- **Projects** — every project (or task) in range with its total. Selecting one
-  filters the day's Tasks to it (master→detail); the project running right now
-  is flagged `>`. `[`/`]` shift the window, `t` jumps to today, `⇧1`/`⇧2`/`⇧3`
-  set the span (1/7/30 days), `b` toggles project/task rows.
+- **Projects** — two stacked sections: **Today** (today's projects from the live
+  status, independent of the browsing window — its running project counts up live)
+  on top, then **Window** (every project, or task, in range, led by an `All` row).
+  Each section header shows its subtotal. Selecting a row filters the day's Tasks
+  to it (master→detail); picking a **Today** project also jumps the day view to
+  today. The project running right now is flagged `>`. `j`/`k` flow across both
+  sections and **`T`** toggles between them; `[`/`]` shift the window, `t` jumps
+  to today, `⇧1`/`⇧2`/`⇧3` set the span (1/7/30 days), `b` toggles project/task rows.
 - **Tasks** — the focused day's tasks, each led by a status glyph: `>` running,
   `=` paused, `»` deferred, `x` done.
 - **Pending** — the [backlog](#pending-backlog): `a` add (`desc @project
   !YYYY-MM-DD`), `d` set/clear the due date, `[`/`]` reorder, `x` drop, `Enter`
   to start (promote). Deadlines are colored by urgency (overdue red, due-soon amber).
+  Because the list is narrow, focusing this panel shows the **selected item in
+  full** — its word-wrapped description plus project, due date, and created time —
+  in the main column (where the Timeline normally sits).
 
 Main:
 
@@ -348,13 +358,21 @@ onto its day and selecting it.
 
 Mutations run the same commands as the CLI, on the selected task: `p` pause,
 `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥` project
-autocomplete), `n` log a note, `x` cancel (with a confirm); `s` starts a
+autocomplete), `n` log a note, `x` cancel (void), and `o` carry a past day's task
+over to today; `u` undoes the last logged event on the focused day. `s` starts a
 brand-new task — type a description with an optional inline `@project` (`⇥`
 completes a known project, or just type a new name; omit it to auto-detect) and
 an optional inline `%time` (e.g. `%9:30`) to backdate the start — omit it for now.
 `A` toggles how `start`/`resume` treat another running task in the same project —
 `∥ parallel` (the default) keeps it running, `⇄ 1-at-a-time` auto-pauses it first;
 the current mode shows next to the running-task header.
+
+An action can pop a **y/n confirm** first (`y`/`Enter` accepts, `n`/`Esc`
+declines); how many do is set by the `confirm` [config](#configuration) — `all`
+(every action), `destructive` (the default — only `cancel`/void and pending
+`drop`), or `off`. In any **text prompt**, editing is readline-style: `←`/`→` and
+`Home`/`End` (or `Ctrl+A`/`Ctrl+E`) move the caret, `⌫`/`Del` delete a character,
+and **`Ctrl+W`** (or **`Ctrl+Backspace`**) deletes the previous word.
 
 To do any of `pause`/`resume`/`complete`/`defer`/`cancel` **at an explicit time**
 rather than now, use the **Shift** variant — `P`/`R`/`C`/`D`/`X` — which opens a
@@ -366,7 +384,13 @@ and respect `NO_COLOR`. The chrome is themable from the [config](#configuration)
 `accent` sets the focused panel's border (and header), and each panel has its own
 title color — `color_projects`, `color_tasks`, `color_pending`, `color_range`,
 `color_day`, `color_timeline` — so the six panels stay visually distinct. Each
-takes a 256-color code, a hex value (`#9d7cd8`), or an ANSI name.
+takes a 256-color code, a hex value (`#9d7cd8`), or an ANSI name. The status
+markers (`>` running, `=` paused, `»` deferred, `x` done) **and every other
+indicator** (the running-task marker, pause-mode badge, now-marker, `more`
+arrows, …) are plain ASCII by default so they render in any font; set
+`icons=on` to switch them all to Nerd-Font icons (requires a [patched
+font](https://www.nerdfonts.com) — there's no reliable way for a terminal app to
+detect glyph support, so it's opt-in, and either mode is fully self-consistent).
 
 The panel **layout** is configurable too: `balanced` (the default — the focused
 panel takes ~half its column), `spotlight` (the focused panel dominates, the rest

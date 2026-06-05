@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 func indexOf(ss []string, want string) int {
@@ -99,6 +100,23 @@ func runeDeleteBefore(s string, i int) (string, int) {
 	return string(out), i - 1
 }
 
+// runeDeleteWordBefore removes the word immediately before index i (Ctrl+W /
+// Ctrl+Backspace): it first eats any whitespace just before the cursor, then the
+// run of non-whitespace, leaving the cursor where the word began. No-op at i<=0.
+func runeDeleteWordBefore(s string, i int) (string, int) {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	j := i
+	for j > 0 && unicode.IsSpace(r[j-1]) { // skip trailing whitespace
+		j--
+	}
+	for j > 0 && !unicode.IsSpace(r[j-1]) { // then the word itself
+		j--
+	}
+	out := append(append([]rune{}, r[:j]...), r[i:]...)
+	return string(out), j
+}
+
 // runeDeleteAt removes the rune at index i (forward Delete), leaving the cursor
 // in place. No-op when i is at or past the end.
 func runeDeleteAt(s string, i int) (string, int) {
@@ -116,7 +134,7 @@ func runeDeleteAt(s string, i int) (string, int) {
 func withCursor(value string, i int) string {
 	r := []rune(value)
 	i = clamp(i, 0, len(r))
-	return string(r[:i]) + "▏" + string(r[i:])
+	return string(r[:i]) + pickGlyph("|", "▏") + string(r[i:])
 }
 
 // wrapWords splits s into lines no wider than w display columns (rune-based),

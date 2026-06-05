@@ -8,7 +8,10 @@
 #   ./wjdev <wj args...>     run the repo's ./wj  (e.g. ./wjdev status, ./wjdev grid --json)
 #   ./wjdev ui               build + launch the repo's wj-tui on the scratch data
 #   ./wjdev build            (re)build tui/wj-tui
-#   ./wjdev seed             wipe + repopulate sample data (incl. out-of-shift work + pending)
+#   ./wjdev seed             wipe + repopulate ~months of realistic history that
+#                            exercises nearly every action (start/pause/resume/
+#                            complete/defer/cancel/amend/move/log/continue +
+#                            pending with due dates), plus a live "today"
 #   ./wjdev reset            wipe the scratch data/config
 #   ./wjdev where            print the scratch paths
 #
@@ -16,6 +19,7 @@
 #   WJ_DEV_DIR     (default: ~/.local/share/wj-dev)
 #   WJ_DEV_CONFIG  (default: ~/.config/wj-dev.conf)
 # Set WJDEV_NO_BUILD=1 to skip the rebuild that `ui` does by default.
+# Set WJDEV_SEED_DAYS=N to change how far back `seed` generates (default 63).
 #
 set -euo pipefail
 
@@ -35,18 +39,134 @@ note() { printf 'wjdev: %s\n' "$*" >&2; }
 
 build_tui() { ( cd "$REPO" && make tui >/dev/null ) && note "built $TUI"; }
 
+# seed_data wipes the scratch dataset and rebuilds ~months of realistic history,
+# so wj-tui looks lived-in. Every working day is written with explicit
+# --date/--at, so events land on past days; task ids are per-day (T1, T2, …).
+# Between the day templates and the "today" block it exercises nearly every
+# action: start, pause/resume, complete, defer, cancel (void), amend, move, log
+# (notes), continue (carry-over), plus a pending backlog with assorted due dates
+# and a reorder. "today" is left with running/paused/deferred tasks anchored to
+# the current clock, so the live view (header clock + Today section) has motion.
 seed_data() {
     rm -rf "$WJ_DATA_DIR" "$WJ_CONFIG"
-    "$WJ" config >/dev/null                       # seed the default (09:00–19:00) config
-    local today; today=$(date +%Y-%m-%d)
-    "$WJ" start    "review PRs"      --project backend --at 10:00 >/dev/null
-    "$WJ" complete T1                                  --at 11:30 >/dev/null
-    "$WJ" start    "early standup"   --project ops     --at 08:10 >/dev/null   # before shift_start
-    "$WJ" complete T2                                  --at 08:45 >/dev/null
-    "$WJ" start    "writing docs"    --project backend --at 09:30 >/dev/null   # left running
-    "$WJ" add      "ship the release"   --project backend --due "$today" >/dev/null
-    "$WJ" add      "answer support tix" --project ops               >/dev/null
-    note "seeded sample data in $WJ_DATA_DIR"
+    "$WJ" config >/dev/null                        # default 09:00–19:00 shift
+
+    local today days nowmin processed=0
+    today=$(date +%Y-%m-%d)
+    days=${WJDEV_SEED_DAYS:-63}                     # how far back to generate
+    nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+
+    local D off                                    # the day being written + its age in days
+    local -a BE=("refactor auth module" "fix the flaky integration test" "optimize the slow report query" \
+                 "add a request rate limiter" "migrate the users table" "harden the token parser")
+    local -a FE=("redesign the settings page" "fix the sidebar layout bug" "add a dark-mode toggle" \
+                 "accessibility audit pass" "speed up first paint")
+    local -a OPS=("rotate service credentials" "on-call triage" "refresh the deploy runbook" "incident postmortem")
+    local -a DOC=("write the API guide" "update the changelog" "draft the caching RFC")
+    local -a INF=("upgrade the k8s nodes" "tune the autoscaler" "patch the nginx CVE")
+
+    # rotate a pool by the day's age so consecutive days differ without randomness
+    pick()       { local -n _a=$1; printf '%s' "${_a[$(( off % ${#_a[@]} ))]}"; }
+    hm()         { local m=$1; (( m<0 )) && m=0; (( m>1439 )) && m=1439; printf '%02d:%02d' $(( m/60 )) $(( m%60 )); }
+    ago()        { hm $(( nowmin - $1 )); }        # HH:MM for N minutes before "now"
+    # start_task <at> <project> <desc…>  -> echoes the new task id (T#)
+    start_task() { local at=$1 proj=$2; shift 2
+                   "$WJ" start "$*" --project "$proj" --parallel --date "$D" --at "$at" | awk 'NR==1{print $1}'; }
+    # act <verb> <id> <at> [extra…]  (pause/resume/complete/defer/cancel/amend/move)
+    act()        { local verb=$1 id=$2 at=$3; shift 3
+                   "$WJ" "$verb" "$id" "$@" --date "$D" --at "$at" >/dev/null; }
+    # note_on <at> <project> <text…>  (a log note against that project's active task)
+    note_on()    { local at=$1 proj=$2; shift 2
+                   "$WJ" log "$*" --project "$proj" --date "$D" --at "$at" >/dev/null; }
+
+    # one day's work; $1 selects a template (varied so the gantt isn't uniform)
+    seed_day() {
+        local id a b c
+        case $1 in
+        0)  # typical dev day: standup, deep work with a break + note, a rename+move, a deferral
+            id=$(start_task 09:05 meetings "daily standup");       act complete "$id" 09:18
+            id=$(start_task 09:25 backend "$(pick BE)");           note_on 09:55 backend "narrowed it to the cache layer"
+            act pause "$id" 11:00 "coffee";                        act resume "$id" 11:15
+            act complete "$id" 12:40
+            id=$(start_task 13:35 frontend "$(pick FE)");          act amend "$id" 14:10 "$(pick FE) (take two)"
+            act move "$id" 14:40 backend;                          act complete "$id" 15:25
+            id=$(start_task 15:35 backend "review the open PRs");  act defer "$id" 16:40 "waiting on review"
+            ;;
+        1)  # meeting-heavy day with a deferral and a voided (cancelled) task
+            id=$(start_task 09:00 meetings "sprint planning");     act complete "$id" 10:30
+            id=$(start_task 10:40 infra "$(pick INF)");            note_on 11:20 infra "staging looks healthy"
+            act pause "$id" 12:00 "lunch";                         act resume "$id" 13:00
+            act defer "$id" 14:00 "blocked on cloud access"
+            id=$(start_task 14:10 support "reproduce the customer crash"); act cancel "$id" 14:25
+            id=$(start_task 14:35 docs "$(pick DOC)");             act complete "$id" 17:40
+            ;;
+        2)  # out-of-shift day: an early page before 09:00 and a late deploy after 19:00
+            id=$(start_task 07:40 ops "early on-call page");       act complete "$id" 08:20
+            id=$(start_task 09:10 backend "$(pick BE)");           note_on 10:30 backend "added a regression test"
+            act complete "$id" 12:05
+            id=$(start_task 13:00 frontend "$(pick FE)");          act move "$id" 15:00 ops
+            act complete "$id" 16:10
+            id=$(start_task 19:30 infra "$(pick INF)");            note_on 19:50 infra "rolling out to 10%"
+            act complete "$id" 20:25
+            ;;
+        3)  # two projects in parallel, plus an auto-pause within one project
+            a=$(start_task 09:15 backend "$(pick BE)")
+            b=$(start_task 09:40 ops "$(pick OPS)")                # different project → coexists in parallel
+            note_on 10:10 backend "tests are green locally"
+            c=$("$WJ" start "hotfix the login redirect" --project backend --auto-pause --date "$D" --at 11:00 | awk 'NR==1{print $1}')
+            act complete "$c" 12:10                                # starting c auto-paused a (same project)
+            act resume "$a" 12:20;                                 act complete "$a" 13:40
+            act pause "$b" 13:50 "standup";                        act resume "$b" 14:05
+            act defer "$b" 15:30 "waiting on the vendor"
+            ;;
+        *)  # a light day: one focused block
+            id=$(start_task 09:30 docs "$(pick DOC)");             note_on 11:00 docs "good progress"
+            act complete "$id" 13:00
+            ;;
+        esac
+    }
+
+    note "seeding ~$days days of history into $WJ_DATA_DIR (set WJDEV_SEED_DAYS to change)…"
+    for (( off=days; off>=1; off-- )); do
+        D=$(date -d "$today -$off days" +%Y-%m-%d)
+        if (( $(date -d "$D" +%u) >= 6 )); then continue; fi     # skip Sat/Sun
+        seed_day $(( off % 5 ))
+        processed=$(( processed + 1 ))
+        if (( processed % 10 == 0 )); then note "  …$processed days seeded"; fi
+    done
+
+    # --- today: a live-looking, in-progress state, anchored to the wall clock ---
+    D=$today; off=0
+    id=$(start_task "$(ago 320)" meetings "daily standup");        act complete "$id" "$(ago 305)"
+    id=$(start_task "$(ago 290)" backend "$(pick BE)")
+    note_on "$(ago 250)" backend "reproduced on a clean checkout"
+    act pause "$id" "$(ago 210)" "lunch";                          act resume "$id" "$(ago 150)"
+    act complete "$id" "$(ago 95)"
+    id=$(start_task "$(ago 120)" frontend "$(pick FE)");           act pause "$id" "$(ago 80)" "waiting on design"
+    id=$(start_task "$(ago 60)" docs "$(pick DOC)");               act defer "$id" "$(ago 40)" "needs review first"
+    id=$(start_task "$(ago 70)" backend "wire up the new endpoint")   # left running → drives the live clock
+    note_on "$(ago 25)" backend "happy path works; handling errors next"
+
+    # carry the most recent weekday's task into today (exercises `continue`)
+    local pday back
+    for (( back=1; back<=7; back++ )); do
+        pday=$(date -d "$today -$back days" +%Y-%m-%d)
+        if (( $(date -d "$pday" +%u) <= 5 )); then break; fi
+    done
+    "$WJ" continue T2 --date "$pday" --at "$(ago 50)" --parallel >/dev/null 2>&1 \
+        || "$WJ" continue T1 --date "$pday" --at "$(ago 50)" --parallel >/dev/null 2>&1 || true
+
+    # --- pending backlog: overdue / due-today / soon / no-due, then a reorder ----
+    "$WJ" add "ship the 1.0 release"           --project backend  --due "$(date -d "$today +3 days"  +%Y-%m-%d)" >/dev/null
+    "$WJ" add "answer the overdue support tix" --project support  --due "$(date -d "$today -2 days"  +%Y-%m-%d)" >/dev/null
+    "$WJ" add "prep the quarterly review"      --project meetings --due "$today" >/dev/null
+    "$WJ" add "investigate the memory leak"    --project backend  >/dev/null
+    "$WJ" add "write the onboarding docs"      --project docs     --due "$(date -d "$today +10 days" +%Y-%m-%d)" >/dev/null
+    "$WJ" raise P4 >/dev/null                   # bubble a fresh item up…
+    "$WJ" lower P1 >/dev/null
+    "$WJ" due   P3 "$(date -d "$today +1 day" +%Y-%m-%d)" >/dev/null   # …and nudge a deadline
+
+    note "seeded $processed past days + a live today + 5 pending in $WJ_DATA_DIR"
 }
 
 case "${1:-}" in
@@ -54,7 +174,15 @@ case "${1:-}" in
         shift
         [[ -n "${WJDEV_NO_BUILD:-}" ]] || build_tui
         [[ -x "$TUI" ]] || build_tui
-        exec "$TUI" -wj "$WJ" "$@"
+        # mirror `wj ui`: forward the relevant settings from the dev config, if set
+        tuiargs=(-wj "$WJ")
+        if [[ -f "$WJ_CONFIG" ]]; then
+            for k in confirm icons; do
+                v=$(sed -n "s/^[[:space:]]*$k[[:space:]]*=[[:space:]]*\\([A-Za-z]*\\).*/\\1/p" "$WJ_CONFIG" | tail -n1)
+                [[ -n $v ]] && tuiargs+=("-$k" "$v")
+            done
+        fi
+        exec "$TUI" "${tuiargs[@]}" "$@"
         ;;
     build)
         build_tui

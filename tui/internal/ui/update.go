@@ -29,8 +29,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case liveMsg:
 		if msg.err == nil {
+			anchor := m.currentAnchor() // today data resizes the Projects list…
 			m.live = msg.s
 			m.liveAt = time.Now()
+			m.focusedRow = m.anchorIndex(anchor) // …so re-anchor the selection
 		}
 		return m, nil
 
@@ -62,7 +64,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// NB: do not clear m.err here — a background reload must not erase a
 		// mutation/load error before the user has seen it (cleared on keypress).
-		prevProj := m.projectFilter() // remember the selected project (old rows)
+		firstLoad := m.g == nil
+		anchor := m.currentAnchor() // remember the selection by identity (old rows)
 		m.g = msg.g
 		m.from, m.to = msg.g.From, msg.g.To
 		if !m.focusInit && len(m.g.Days) > 0 {
@@ -70,18 +73,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focusInit = true
 		}
 		m.focusedDay = clamp(m.focusedDay, 0, len(m.g.Days)-1)
-		// follow the selection by project identity, not raw index, since the row
-		// set can be reordered/re-keyed across a reload (or a by project↔task flip).
-		if prevProj != "" {
-			for i, r := range m.g.Rows {
-				if rowProject(r) == prevProj {
-					m.focusedRow = i + 1
-					break
-				}
-			}
+		// first load defaults to "All"; later reloads follow the selection by
+		// identity, since the row set (and the dynamic Today section) can resize.
+		if firstLoad {
+			m.focusedRow = m.allRow()
+		} else {
+			m.focusedRow = m.anchorIndex(anchor)
 		}
-		m.focusedRow = clamp(m.focusedRow, 0, len(m.g.Rows)) // 0 = All, len = last row
-		return m, m.loadGrid(m.currentDay())                 // refresh the drill-down too
+		return m, m.loadGrid(m.currentDay()) // refresh the drill-down too
 
 	case gridMsg:
 		if msg.day != m.currentDay() {
@@ -228,8 +227,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		// start a new task — global. Description plus an optional inline
 		// "@project" (⇥ cycles known projects, like the add/move prompts).
-		m.input = inputMode{active: true, action: "start",
-			prompt: "start: desc  (optional @project ⇥completes  %time, e.g. %9:30)"}
+		return m.armOrInput(inputMode{active: true, action: "start",
+			prompt: "start: desc  (optional @project ⇥completes  %time, e.g. %9:30)"}, false, "start a new task?")
+	case "u":
+		// undo the last logged event on the focused day (wj's append-only safety
+		// net); runs straight away — it *is* the recovery action.
+		if day := m.currentDay(); day != "" {
+			return m, m.mutate("undo", "--date", day)
+		}
 		return m, nil
 	case "L":
 		// cycle the panel layout (balanced → spotlight → golden → …); live only,
@@ -291,20 +296,19 @@ func (m Model) keyPending(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter": // promote the selected backlog item into a tracked task
 		if id := m.selectedPendID(); id != "" {
-			return m, m.mutate("start", id)
+			return m.armOrRaw("start", []string{id}, false, "promote "+id+" to a tracked task?")
 		}
-	case "a": // add a new pending task (inline @project / !due optional)
-		m.input = inputMode{active: true, action: "add",
-			prompt: "add pending: desc  (optional @project  !YYYY-MM-DD)"}
+	case "a": // add a new pending task
+		return m.armOrInput(inputMode{active: true, action: "add",
+			prompt: "add pending: desc  (optional @project  !YYYY-MM-DD)"}, false, "add a pending task?")
 	case "d": // set / clear its deadline
 		if id := m.selectedPendID(); id != "" {
-			m.input = inputMode{active: true, action: "pdue", taskID: id,
-				prompt: "due " + id + " (YYYY-MM-DD; empty clears)"}
+			return m.armOrInput(inputMode{active: true, action: "pdue", taskID: id,
+				prompt: "due " + id + " (YYYY-MM-DD; empty clears)"}, false, "set due for "+id+"?")
 		}
-	case "x": // drop without starting (guarded)
+	case "x": // drop without starting — destructive
 		if id := m.selectedPendID(); id != "" {
-			m.confirm = confirmMode{active: true, prompt: "drop pending " + id + "?",
-				verb: "drop", valueArgs: []string{id}, raw: true}
+			return m.armOrRaw("drop", []string{id}, true, "drop pending "+id+"?")
 		}
 	case "[": // raise one step (and follow it)
 		if id := m.selectedPendID(); id != "" {
@@ -380,34 +384,33 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	id := m.selectedTaskID()
 	switch msg.String() {
 	case "p":
-		next, cmd := m.issueMutation("pause", []string{id})
+		next, cmd := m.armOrMutate("pause", []string{id}, false, "pause "+id+"?")
 		return next, cmd, true
 	case "r":
-		next, cmd := m.issueMutation("resume", []string{id})
+		next, cmd := m.armOrMutate("resume", []string{id}, false, "resume "+id+"?")
 		return next, cmd, true
 	case "c":
-		next, cmd := m.issueMutation("complete", []string{id})
+		next, cmd := m.armOrMutate("complete", []string{id}, false, "complete "+id+"?")
 		return next, cmd, true
 	case "d":
-		next, cmd := m.issueMutation("defer", []string{id})
+		next, cmd := m.armOrMutate("defer", []string{id}, false, "defer "+id+"?")
 		return next, cmd, true
-	// Shift+key = same action at an explicit --at time (a time prompt, then run).
+	// Shift+key = the same action at an explicit --at time.
 	case "P":
-		next, cmd := m.promptTimedMutation("pause", []string{id})
+		next, cmd := m.armOrTimed("pause", []string{id}, false, "pause "+id+" at a time?")
 		return next, cmd, true
 	case "R":
-		next, cmd := m.promptTimedMutation("resume", []string{id})
+		next, cmd := m.armOrTimed("resume", []string{id}, false, "resume "+id+" at a time?")
 		return next, cmd, true
 	case "C":
-		next, cmd := m.promptTimedMutation("complete", []string{id})
+		next, cmd := m.armOrTimed("complete", []string{id}, false, "complete "+id+" at a time?")
 		return next, cmd, true
 	case "D":
-		next, cmd := m.promptTimedMutation("defer", []string{id})
+		next, cmd := m.armOrTimed("defer", []string{id}, false, "defer "+id+" at a time?")
 		return next, cmd, true
-	case "X": // timed void: confirm first (it's destructive), then prompt for time
-		m.confirm = confirmMode{active: true, prompt: "cancel (void) " + id + " at a time?",
-			verb: "cancel", valueArgs: []string{id}, atTime: true}
-		return m, nil, true
+	case "X": // timed void — destructive
+		next, cmd := m.armOrTimed("cancel", []string{id}, true, "cancel (void) "+id+" at a time?")
+		return next, cmd, true
 	case "o": // continue (carry over) a past day's task as a fresh task today
 		day := m.currentDay()
 		if day == "" || day == m.today {
@@ -415,25 +418,25 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		// the focused (past) day is the *source*; the CLI always writes to today,
-		// so run directly rather than via issueMutation's past-day time prompt.
-		args := baseArgs("continue", m.withPauseFlag("continue", []string{id}), day)
-		return m, m.mutate(args...), true
+		// so run directly (raw) rather than via issueMutation's past-day time prompt.
+		valueArgs := append(m.withPauseFlag("continue", []string{id}), "--date", day)
+		next, cmd := m.armOrRaw("continue", valueArgs, false, "carry over "+id+" to today?")
+		return next, cmd, true
 	case "a":
-		m.input = inputMode{active: true, action: "amend",
-			prompt: "amend " + id + " (new description)", taskID: id}
-		return m, nil, true
+		next, cmd := m.armOrInput(inputMode{active: true, action: "amend",
+			prompt: "amend " + id + " (new description)", taskID: id}, false, "amend "+id+"?")
+		return next, cmd, true
 	case "m":
-		m.input = inputMode{active: true, action: "move",
-			prompt: "move " + id + " (target project; ⇥ completes)", taskID: id}
-		return m, nil, true
+		next, cmd := m.armOrInput(inputMode{active: true, action: "move",
+			prompt: "move " + id + " (target project; ⇥ completes)", taskID: id}, false, "move "+id+"?")
+		return next, cmd, true
 	case "n":
-		m.input = inputMode{active: true, action: "log",
-			prompt: "log (note on the running task)"}
-		return m, nil, true
-	case "x":
-		m.confirm = confirmMode{active: true, prompt: "cancel (void) " + id + "?",
-			verb: "cancel", valueArgs: []string{id}}
-		return m, nil, true
+		next, cmd := m.armOrInput(inputMode{active: true, action: "log",
+			prompt: "log (note on the running task)"}, false, "log a note?")
+		return next, cmd, true
+	case "x": // void — destructive
+		next, cmd := m.armOrMutate("cancel", []string{id}, true, "cancel (void) "+id+"?")
+		return next, cmd, true
 	}
 	return m, nil, false
 }
@@ -462,6 +465,49 @@ func (m Model) promptTimedMutation(verb string, valueArgs []string) (tea.Model, 
 	label := strings.TrimSpace(verb + " " + strings.Join(valueArgs, " "))
 	m.input = inputMode{active: true, action: "at", pending: baseArgs(verb, m.withPauseFlag(verb, valueArgs), day),
 		prompt: label + " — time (e.g. 14:30)"}
+	return m, nil
+}
+
+// armOr* gate an action behind a y/n confirm when the `confirm` config calls for
+// it (see needConfirm); otherwise they run the action straight away. Every
+// confirm follow-up is one of the four handleConfirm paths, so the un-guarded
+// branch here mirrors what y would do.
+
+// armOrMutate: a plain mutation (pause/resume/complete/defer/cancel), run via
+// issueMutation (which may chain into a past-day time prompt).
+func (m Model) armOrMutate(verb string, valueArgs []string, destructive bool, prompt string) (tea.Model, tea.Cmd) {
+	if m.needConfirm(destructive) {
+		m.confirm = confirmMode{active: true, prompt: prompt, verb: verb, valueArgs: valueArgs}
+		return m, nil
+	}
+	return m.issueMutation(verb, valueArgs)
+}
+
+// armOrTimed: a mutation at an explicit --at time (Shift-key variants).
+func (m Model) armOrTimed(verb string, valueArgs []string, destructive bool, prompt string) (tea.Model, tea.Cmd) {
+	if m.needConfirm(destructive) {
+		m.confirm = confirmMode{active: true, prompt: prompt, verb: verb, valueArgs: valueArgs, atTime: true}
+		return m, nil
+	}
+	return m.promptTimedMutation(verb, valueArgs)
+}
+
+// armOrRaw: a plain mutate with no --date round-trip (continue/promote/drop).
+func (m Model) armOrRaw(verb string, valueArgs []string, destructive bool, prompt string) (tea.Model, tea.Cmd) {
+	if m.needConfirm(destructive) {
+		m.confirm = confirmMode{active: true, prompt: prompt, verb: verb, valueArgs: valueArgs, raw: true}
+		return m, nil
+	}
+	return m, m.mutate(append([]string{verb}, valueArgs...)...)
+}
+
+// armOrInput: an action that opens a text prompt (start/amend/move/log/add/due).
+func (m Model) armOrInput(in inputMode, destructive bool, prompt string) (tea.Model, tea.Cmd) {
+	if m.needConfirm(destructive) {
+		m.confirm = confirmMode{active: true, prompt: prompt, input: in}
+		return m, nil
+	}
+	m.input = in
 	return m, nil
 }
 
@@ -637,6 +683,10 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.value, m.input.cursor = runeDeleteBefore(m.input.value, m.input.cursor)
 		m.input.acPrefix = "" // editing restarts autocomplete
 		return m, nil
+	case tea.KeyCtrlW, tea.KeyCtrlH: // Ctrl+W / Ctrl+Backspace: delete the previous word
+		m.input.value, m.input.cursor = runeDeleteWordBefore(m.input.value, m.input.cursor)
+		m.input.acPrefix = ""
+		return m, nil
 	case tea.KeyDelete:
 		m.input.value, m.input.cursor = runeDeleteAt(m.input.value, m.input.cursor)
 		m.input.acPrefix = ""
@@ -742,17 +792,22 @@ func (m Model) jumpToResult() (tea.Model, tea.Cmd) {
 	return m, m.loadGantt()
 }
 
-// handleConfirm resolves a y/n destructive-action prompt.
+// handleConfirm resolves a y/n destructive-action prompt. Enter accepts (same as
+// y) so a confirm can be cleared without reaching for the y key.
 func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y":
+	case "y", "Y", "enter":
 		c := m.confirm
 		m.confirm = confirmMode{}
 		m.err = ""
+		if c.input.active { // amend/move: confirmed, now open the text prompt
+			m.input = c.input
+			return m, nil
+		}
 		if c.raw { // backlog ops aren't dated task mutations — run them plainly
 			return m, m.mutate(append([]string{c.verb}, c.valueArgs...)...)
 		}
-		if c.atTime { // Shift+X: confirmed, now ask for the explicit --at time
+		if c.atTime { // Shift+X / C / D: confirmed, now ask for the explicit --at time
 			return m.promptTimedMutation(c.verb, c.valueArgs)
 		}
 		return m.issueMutation(c.verb, c.valueArgs)
@@ -764,9 +819,9 @@ func (m Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	rows := 0
-	if m.g != nil {
-		rows = len(m.g.Rows)
+	last := len(m.projRows()) - 1 // highest selectable row (across both sections)
+	if last < 0 {
+		last = 0
 	}
 	switch msg.String() {
 	case "left":
@@ -779,7 +834,7 @@ func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.afterProjectChange()
 		}
 	case "down", "j":
-		if m.focusedRow < rows {
+		if m.focusedRow < last {
 			m.focusedRow++
 			return m.afterProjectChange()
 		}
@@ -787,14 +842,16 @@ func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focusedRow = 0
 		return m.afterProjectChange()
 	case "G":
-		m.focusedRow = rows
+		m.focusedRow = last
 		return m.afterProjectChange()
 	case "ctrl+d":
-		m.focusedRow = clamp(m.focusedRow+m.pageStep(), 0, rows)
+		m.focusedRow = clamp(m.focusedRow+m.pageStep(), 0, last)
 		return m.afterProjectChange()
 	case "ctrl+u":
-		m.focusedRow = clamp(m.focusedRow-m.pageStep(), 0, rows)
+		m.focusedRow = clamp(m.focusedRow-m.pageStep(), 0, last)
 		return m.afterProjectChange()
+	case "T": // toggle the cursor between the Today and Window sections
+		return m.jumpSection()
 	case "enter":
 		m.pane = paneDay
 	case "[":
@@ -807,7 +864,7 @@ func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.by = "project"
 		}
-		m.focusedRow = 0 // row set changes; reset to All
+		m.focusedRow = m.allRow() // row set changes; reset to All
 		return m, m.loadGantt()
 	case "t":
 		// jump focus to today if it's in range, else recenter on a 7-day window
@@ -889,13 +946,50 @@ func (m Model) afterDayChange() (tea.Model, tea.Cmd) {
 }
 
 // afterProjectChange re-selects the first matching task after the sidebar
-// project (the master→detail filter) changes, reloading its timeline.
+// project (the master→detail filter) changes, reloading its timeline. Selecting
+// a Today-section project also moves the day view to today (when today is in the
+// loaded range), so the filtered task list reflects that project's work today.
 func (m Model) afterProjectChange() (tea.Model, tea.Cmd) {
+	if m.selectedToday() && m.g != nil {
+		if i := indexOf(m.g.Days, m.today); i >= 0 && i != m.focusedDay {
+			m.focusedDay = i
+			m.selTask = 0
+			m.grid = nil
+			m.show = nil
+			return m, m.loadGrid(m.currentDay())
+		}
+	}
 	m.selTask = 0
 	if m.selectedTaskID() == "" {
 		m.show = nil
 	}
 	return m, m.loadShow(m.selectedTaskID(), m.currentDay())
+}
+
+// jumpSection moves the Projects-panel cursor to the other section (Today ↔
+// Window), bound to T. A no-op when there is no Today section.
+func (m Model) jumpSection() (tea.Model, tea.Cmd) {
+	rows := m.projRows()
+	if len(rows) == 0 {
+		return m, nil
+	}
+	cur := rows[clamp(m.focusedRow, 0, len(rows)-1)]
+	target := -1
+	if cur.today {
+		target = m.allRow() // into the Window section, on the All entry
+	} else {
+		for i, r := range rows {
+			if r.today {
+				target = i // into the Today section, first row
+				break
+			}
+		}
+	}
+	if target < 0 || target == m.focusedRow {
+		return m, nil
+	}
+	m.focusedRow = target
+	return m.afterProjectChange()
 }
 
 // shiftRange slides the window by whole windows (dir = -1 earlier, +1 later).

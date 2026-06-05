@@ -159,9 +159,9 @@ func (m Model) renderHeader(w int) string {
 func (m Model) renderFooter(w int) string {
 	var b strings.Builder
 	if m.err != "" {
-		b.WriteString(errStyle.Render(truncate("⚠ "+m.err, w)) + "\n")
+		b.WriteString(errStyle.Render(truncate(pickGlyph("!", "⚠")+" "+m.err, w)) + "\n")
 	} else if m.notice != "" {
-		b.WriteString(noticeStyle.Render(truncate("✓ "+m.notice, w)) + "\n")
+		b.WriteString(noticeStyle.Render(truncate(pickGlyph("+", "✓")+" "+m.notice, w)) + "\n")
 	}
 	switch {
 	case m.input.active:
@@ -176,12 +176,12 @@ func (m Model) renderFooter(w int) string {
 				if len(ms) > 6 {
 					ms = ms[:6]
 				}
-				hint = "⇥ " + strings.Join(ms, " ") + "   [esc] cancel"
+				hint = pickGlyph("Tab", "⇥") + " " + strings.Join(ms, " ") + "   [esc] cancel"
 			}
 		}
 		b.WriteString(footerStyle.Render(truncate(hint, w)))
 	case m.confirm.active:
-		b.WriteString(inputStyle.Render(m.confirm.prompt+"  ") + footerStyle.Render("[y/n]"))
+		b.WriteString(inputStyle.Render(m.confirm.prompt+"  ") + footerStyle.Render("[y/n] ("+pickGlyph("Enter", "⏎")+"=yes)"))
 	default:
 		b.WriteString(footerStyle.Render(truncate(m.footerLine(), w)))
 	}
@@ -265,6 +265,48 @@ func (m Model) renderPending(cw, maxRows int, active bool) string {
 	return strings.Join(items, "\n")
 }
 
+// renderPendingDetail shows the selected backlog task in full — its description
+// word-wrapped, with project, deadline, and created date. It is the master→detail
+// counterpart of the Timeline, shown in the main column while the Pending pane has
+// focus, so a long description stays fully readable despite the narrow list.
+func (m Model) renderPendingDetail(innerW, maxBody int) string {
+	if m.selPend < 0 || m.selPend >= len(m.pending) {
+		return dimStyle.Render("(no pending task selected)")
+	}
+	p := m.pending[m.selPend]
+	var lines []string
+	head := lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Bold(true).Render(p.ID)
+	if p.Project != "" {
+		head += "  " + lipgloss.NewStyle().Foreground(ProjectColor(p.Project)).Render("["+p.Project+"]")
+	}
+	if p.Due != "" {
+		glyph, gc, due := m.dueBadge(p.Due)
+		label := "due " + due
+		if g := strings.TrimSpace(glyph); g != "" {
+			label = g + " " + label
+		}
+		head += "  " + lipgloss.NewStyle().Foreground(gc).Render(label)
+	}
+	lines = append(lines, head)
+	if when := p.Created; when != "" {
+		if len(when) >= 16 { // YYYY-MM-DDTHH:MM -> "YYYY-MM-DD HH:MM"
+			when = when[:10] + " " + when[11:16]
+		}
+		lines = append(lines, dimStyle.Render("created "+when))
+	}
+	lines = append(lines, "")
+	if strings.TrimSpace(p.Desc) == "" {
+		lines = append(lines, dimStyle.Render("(no description)"))
+	} else {
+		lines = append(lines, wrapWords(p.Desc, innerW)...)
+	}
+	if maxBody > 0 && len(lines) > maxBody { // clamp to the panel height
+		lines = lines[:maxBody]
+		lines[maxBody-1] = dimStyle.Render("…")
+	}
+	return strings.Join(lines, "\n")
+}
+
 // dueBadge maps a deadline to an urgency glyph, color, and compact label.
 // Overdue → red "!", due today/≤2d → amber "!", further out → dim.
 func (m Model) dueBadge(due string) (string, lipgloss.Color, string) {
@@ -302,19 +344,30 @@ func (m Model) renderMain(w, h int, fill bool) string {
 		innerW = 8
 	}
 	dayTitle := "Day — " + m.currentDay()
-	tlTitle := "Timeline"
+	// The bottom main panel is the Timeline by default; when the Pending pane has
+	// focus it becomes the selected backlog item's full detail (Pending lives only
+	// in the sidebar, so its detail maps onto this slot — the Timeline's place).
+	botTitle, botColor := "Timeline", colorTimeline
 	if m.show != nil {
-		tlTitle = "Timeline · " + m.show.ID
+		botTitle = "Timeline · " + m.show.ID
+	}
+	botBody := func(rows int) string { return m.renderTimeline(innerW, rows) }
+	if m.pane == panePending {
+		botTitle, botColor = "Pending", colorPending
+		if id := m.selectedPendID(); id != "" {
+			botTitle = "Pending · " + id
+		}
+		botBody = func(rows int) string { return m.renderPendingDetail(innerW, rows) }
 	}
 	if !fill {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			panel("Range", colorRange, m.rangeBody(innerW, 1<<30), m.pane == paneRange, w, 0),
 			panel(dayTitle, colorDay, m.renderDay(innerW, 1<<30), m.pane == paneDay, w, 0),
-			panel(tlTitle, colorTimeline, m.renderTimeline(innerW, 1<<30), m.pane == paneTimeline, w, 0),
+			panel(botTitle, botColor, botBody(1<<30), m.pane == paneTimeline, w, 0),
 		)
 	}
 	// the main column has 3 panels (Range/Day/Timeline); Pending (pane 3) lives
-	// only in the sidebar, so it maps onto the Timeline slot here.
+	// only in the sidebar, so it maps onto the bottom (Timeline) slot here.
 	mainFocus := int(m.pane)
 	if mainFocus > 2 {
 		mainFocus = 2
@@ -323,7 +376,7 @@ func (m Model) renderMain(w, h int, fill bool) string {
 	return lipgloss.JoinVertical(lipgloss.Left,
 		panel("Range", colorRange, m.rangeBody(innerW, hs[0]-3), m.pane == paneRange, w, hs[0]),
 		panel(dayTitle, colorDay, m.renderDay(innerW, hs[1]-3), m.pane == paneDay, w, hs[1]),
-		panel(tlTitle, colorTimeline, m.renderTimeline(innerW, hs[2]-3), m.pane == paneTimeline, w, hs[2]),
+		panel(botTitle, botColor, botBody(hs[2]-3), m.pane == paneTimeline, w, hs[2]),
 	)
 }
 
@@ -416,6 +469,27 @@ func SetSidebar(side string) {
 	if strings.TrimSpace(side) == "right" {
 		sidebarRight = true
 	}
+}
+
+// useIcons swaps the status markers for Nerd-Font icons. Off by default (the
+// ASCII set renders in any font); set from the config's icons= via SetIcons.
+// A terminal app can't detect a font's glyph coverage, so this is an explicit
+// opt-in rather than auto-detection.
+var useIcons = false
+
+// SetIcons enables Nerd-Font status icons when mode is "on" (anything else,
+// including "off"/empty, keeps the universal ASCII set). Call once at startup.
+func SetIcons(mode string) {
+	useIcons = strings.TrimSpace(mode) == "on"
+}
+
+// pickGlyph returns the Nerd-Font icon when icons are on, else the ASCII
+// fallback. Both are a single cell wide.
+func pickGlyph(ascii, icon string) string {
+	if useIcons {
+		return icon
+	}
+	return ascii
 }
 
 // SetLayoutRatios registers a "custom" layout from config overrides, so named
@@ -511,19 +585,19 @@ func (m Model) runningHeader() string {
 		}
 		mins := t.Minutes + int(time.Since(m.liveAt).Minutes())
 		color := ProjectColor(t.Project)
-		run := lipgloss.NewStyle().Foreground(color).Render("▶ " + t.ID + " [" + t.Project + "]")
+		run := lipgloss.NewStyle().Foreground(color).Render(pickGlyph(">", "▶") + " " + t.ID + " [" + t.Project + "]")
 		return run + " " + t.Desc + dimStyle.Render(" · "+fmtDur(mins)) + m.pauseBadge()
 	}
-	return dimStyle.Render("◦ idle") + m.pauseBadge()
+	return dimStyle.Render(pickGlyph("-", "◦")+" idle") + m.pauseBadge()
 }
 
 // pauseBadge is a compact indicator of how start/resume treat a same-project
 // running task: parallel (default) or auto-pause. Toggled with "A".
 func (m Model) pauseBadge() string {
 	if m.autoPause {
-		return dimStyle.Render(" · ⇄ 1-at-a-time")
+		return dimStyle.Render(" · " + pickGlyph("<>", "⇄") + " 1-at-a-time")
 	}
-	return dimStyle.Render(" · ∥ parallel")
+	return dimStyle.Render(" · " + pickGlyph("||", "∥") + " parallel")
 }
 
 // footerLine is a short, context-sensitive hint that fits on one line; the full
@@ -534,9 +608,9 @@ func (m Model) footerLine() string {
 	}
 	switch m.pane {
 	case paneRange:
-		return "j/k project · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · z zoom · b by · / search · s start · ? help"
+		return "j/k project · T today/window · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · z zoom · b by · / search · s start · ? help"
 	case paneDay:
-		return "j/k task · h/l panel · 1-4 jump · z zoom · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · o carry-over to today · / search · ?"
+		return "j/k task · h/l panel · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · o carry-over · u undo · / search · ?"
 	case panePending:
 		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h/l panel · z zoom · ? help"
 	default:
@@ -549,7 +623,7 @@ func (m Model) footerLine() string {
 func (m Model) searchOverlay(w int) string {
 	cw := w - 4 // panel content width
 	var b strings.Builder
-	b.WriteString(inputStyle.Render("/"+m.search.query+"▏") + "\n")
+	b.WriteString(inputStyle.Render("/"+m.search.query+pickGlyph("|", "▏")) + "\n")
 	if len(m.search.results) == 0 {
 		if m.search.query == "" {
 			b.WriteString(dimStyle.Render("  (no recorded tasks)"))
@@ -600,11 +674,13 @@ func (m Model) helpOverlay() string {
 		{"Esc", "return to Projects"},
 		{"[ / ]", "shift the date window earlier / later"},
 		{"t", "jump to today / recenter the window"},
+		{"T", "in Projects: toggle between the Today and Window sections"},
 		{"⇧1 / ⇧2 / ⇧3", "set window span: 1 / 7 / 30 days"},
 		{"~View", ""},
 		{"/", "search all tasks (id / project / description); Enter jumps"},
 		{"b", "toggle the Projects rows between project and task"},
 		{"", "selecting a project filters the day's Tasks"},
+		{"", "selecting a Today-section project also jumps to today"},
 		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden"},
 		{"z", "zoom: maximize the focused panel full-screen (esc/z to exit)"},
 		{"Ctrl+R", "reload everything from disk"},
@@ -613,16 +689,24 @@ func (m Model) helpOverlay() string {
 		{"d", "set / clear the selected task's deadline"},
 		{"Enter", "start (promote) the selected pending task"},
 		{"[ / ]", "move it up / down · x drop it"},
+		{"", "focusing Pending shows the selected item in full in the main column"},
 		{"~Actions (on the selected task)", ""},
 		{"s", "start a new task: 'desc @project %time' (both optional; ⇥ completes)"},
-		{"A", "toggle start/resume: ∥ parallel (default) vs ⇄ auto-pause same project"},
+		{"A", "toggle start/resume: parallel (default) vs auto-pause same project"},
 		{"p / r / c / d", "pause / resume / complete / defer (now)"},
 		{"P / R / C / D", "same, but prompt for an explicit time (--at)"},
 		{"a / m", "amend description / move (⇥ completes project)"},
 		{"n", "add a note (log) to the running task"},
 		{"o", "carry over (continue) a past day's task today — copies desc + project to a new id"},
-		{"x / X", "cancel (void) — asks to confirm · X also prompts for a time"},
+		{"x / X", "cancel (void) — destructive · X also prompts for a time"},
+		{"u", "undo the last logged event on the focused day"},
 		{"", "on a past day, actions prompt for a time first"},
+		{"", "confirm guard set by the `confirm` config: all | destructive | off"},
+		{"~Text prompts (start / amend / move / note / add / due)", ""},
+		{"← / → · Home/End", "move the caret · Ctrl+A / Ctrl+E also jump to ends"},
+		{"⌫ / Del", "delete back / forward · Ctrl+W or Ctrl+⌫ deletes a word"},
+		{"⇥", "autocomplete a known project (in start / move)"},
+		{"Enter / Esc", "submit · cancel"},
 		{"~General", ""},
 		{"?", "toggle this help"},
 		{"Ctrl+Z", "suspend to the background (fg to resume)"},
@@ -640,35 +724,77 @@ func (m Model) helpOverlay() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// renderProjects is the sidebar list: an "All" entry plus one row per gantt
-// row (project or task), each showing its total. The selected row is the
-// master→detail filter.
+// renderProjects is the sidebar list. It stacks two sections — Today (today's
+// projects, from live status) and Window (the range rows, led by "All") — with a
+// sub-header before each when both are present. The selected row is the
+// master→detail filter; T toggles between the sections.
 func (m Model) renderProjects(cw, maxRows int) string {
 	if m.g == nil {
 		return dimStyle.Render("(loading…)")
 	}
-	if len(m.g.Rows) == 0 {
+	rows := m.projRows()
+	hasToday := false
+	for _, r := range rows {
+		if r.today {
+			hasToday = true
+			break
+		}
+	}
+	// the Window section always carries a synthetic "All" row, so fall back to the
+	// empty-state message only when there is genuinely nothing: no today work and
+	// no range rows.
+	if !hasToday && len(m.g.Rows) == 0 {
 		return dimStyle.Render("(no tracked time)")
 	}
-	total := 0
-	for _, r := range m.g.Rows {
-		total += r.TotalMinutes
-	}
-	active := m.activeProject()
-	items := make([]string, 0, len(m.g.Rows)+1)
-	items = append(items, listLine(" ", lipgloss.Color("244"), lipgloss.Color("250"),
-		"All", fmtDur(total), m.focusedRow == 0, cw))
-	for i, r := range m.g.Rows {
-		p := rowProject(r)
-		glyph, gc := " ", lipgloss.Color("78")
-		if p != "" && p == active {
-			glyph = ">" // this project has the running task
+	// section subtotals shown in the headers: today = sum of its rows, window =
+	// the "All" entry's total.
+	todayTotal, windowTotal := 0, 0
+	for _, r := range rows {
+		switch {
+		case r.today:
+			todayTotal += r.minutes
+		case r.isAll:
+			windowTotal = r.minutes
 		}
-		items = append(items, listLine(glyph, gc, ProjectColor(p),
-			r.Label, fmtDur(r.TotalMinutes), m.focusedRow == i+1, cw))
 	}
-	items = windowRows(items, m.focusedRow, maxRows)
-	return strings.Join(items, "\n")
+	disp := make([]string, 0, len(rows)+2)
+	activeDisp, prevToday, first := 0, false, true
+	for i, r := range rows {
+		if hasToday && (first || r.today != prevToday) { // section boundary header
+			title, total := "Window", windowTotal
+			if r.today {
+				title, total = "Today", todayTotal
+			}
+			disp = append(disp, sectionHeader(title, total, cw))
+		}
+		prevToday, first = r.today, false
+		glyph, gc := " ", lipgloss.Color("78")
+		if r.running {
+			glyph, _ = statusGlyph("in-progress") // same marker (icon or ASCII) as the task lists
+		}
+		lc := lipgloss.Color("250")
+		if !r.isAll && r.project != "" {
+			lc = ProjectColor(r.project)
+		}
+		if i == m.focusedRow {
+			activeDisp = len(disp)
+		}
+		disp = append(disp, listLine(glyph, gc, lc, r.label, fmtDur(r.minutes), i == m.focusedRow, cw))
+	}
+	return strings.Join(windowRows(disp, activeDisp, maxRows), "\n")
+}
+
+// sectionHeader renders a bold sub-header that labels a Projects-panel section
+// (Today / Window) with its subtotal right-aligned to width cw.
+func sectionHeader(label string, mins, cw int) string {
+	dur := fmtDur(mins)
+	leftMax := cw - 1 - len([]rune(dur))
+	if leftMax < 1 {
+		leftMax = 1
+	}
+	l := padRight(truncate(label, leftMax), leftMax)
+	head := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true).Render(l)
+	return head + " " + dimStyle.Render(dur)
 }
 
 // renderTasks is the sidebar list of the focused day's tasks (after the project
@@ -711,20 +837,21 @@ func listLine(glyph string, glyphColor, labelColor lipgloss.Color, left, right s
 		lipgloss.NewStyle().Foreground(labelColor).Render(l) + " " + dimStyle.Render(right)
 }
 
-// statusGlyph maps a task status to its ASCII glyph and accent color. The same
-// glyph set is used in the task lists, the header rollup, and the legend key.
+// statusGlyph maps a task status to its glyph and accent color. The glyph is the
+// universal ASCII marker by default, or a Nerd-Font icon when icons=on (see
+// pickGlyph). The same set is used in the task lists, header rollup, and legend.
 func statusGlyph(status string) (string, lipgloss.Color) {
 	switch status {
 	case "in-progress":
-		return ">", lipgloss.Color("78") // green — running now
+		return pickGlyph(">", ""), lipgloss.Color("78") // play — running now
 	case "paused":
-		return "=", lipgloss.Color("214") // amber
+		return pickGlyph("=", ""), lipgloss.Color("214") // pause
 	case "deferred":
-		return "»", lipgloss.Color("39") // blue
+		return pickGlyph("»", ""), lipgloss.Color("39") // clock — set aside
 	case "completed":
-		return "x", lipgloss.Color("244") // dim — done
+		return pickGlyph("x", ""), lipgloss.Color("244") // check — done
 	case "cancelled":
-		return "x", lipgloss.Color("240")
+		return pickGlyph("x", ""), lipgloss.Color("240") // ban — voided
 	default:
 		return " ", lipgloss.Color("244")
 	}
@@ -765,7 +892,7 @@ func (m Model) todayRollup() string {
 	}
 	seg := func(st string, n int) string {
 		g, c := statusGlyph(st)
-		return lipgloss.NewStyle().Foreground(c).Render(g) + dimStyle.Render(fmt.Sprintf("%d", n))
+		return lipgloss.NewStyle().Foreground(c).Render(g) + dimStyle.Render(fmt.Sprintf(" %d", n))
 	}
 	counts := seg("in-progress", run) + " " + seg("paused", paused)
 	if deferred > 0 {
@@ -913,7 +1040,7 @@ func (m Model) renderDay(innerW, maxBody int) string {
 	var nowLine string
 	if nm := hm(m.grid.Now); nm >= start && nm <= end {
 		marker := []rune(strings.Repeat(" ", axisW))
-		marker[col(nm)] = '▲'
+		marker[col(nm)] = []rune(pickGlyph("^", "▲"))[0]
 		nowLine = gutter + dimStyle.Render(string(marker))
 	}
 	reserved := 1 // axis
@@ -1167,10 +1294,10 @@ func windowRows(rows []string, active, max int) []string {
 	end := start + max
 	out := append([]string(nil), rows[start:end]...)
 	if start > 0 {
-		out[0] = dimStyle.Render(fmt.Sprintf("  ↑ %d more", start))
+		out[0] = dimStyle.Render(fmt.Sprintf("  %s %d more", pickGlyph("^", "↑"), start))
 	}
 	if end < n {
-		out[len(out)-1] = dimStyle.Render(fmt.Sprintf("  ↓ %d more", n-end))
+		out[len(out)-1] = dimStyle.Render(fmt.Sprintf("  %s %d more", pickGlyph("v", "↓"), n-end))
 	}
 	return out
 }

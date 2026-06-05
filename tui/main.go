@@ -31,6 +31,8 @@ func main() {
 		sidebar = flag.String("sidebar", "", "sidebar side: left | right (default: left)")
 		layoutW = flag.String("layout-sidebar", "", "custom layout sidebar width percent, e.g. 28")
 		layoutS = flag.String("layout-split", "", "custom layout panel weights focused,hi,lo, e.g. 60,25,15")
+		confirm = flag.String("confirm", "", "confirm guard: all | destructive | off (default: destructive)")
+		icons   = flag.String("icons", "", "status markers: on (Nerd-Font icons) | off (ASCII, default)")
 		showVer = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -43,10 +45,11 @@ func main() {
 	ui.SetAccent(*accent)
 	ui.SetPanelColors(*colors)
 	ui.SetSidebar(*sidebar)
+	ui.SetIcons(*icons)
 	ui.SetLayoutRatios(*layoutW, *layoutS) // register "custom" before resolving the name
 	ui.SetLayout(*layout)
 	cli := wj.Client{Bin: *bin}
-	model := ui.New(cli, *from, *to, *by)
+	model := ui.New(cli, *from, *to, *by, *confirm)
 
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

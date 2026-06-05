@@ -71,6 +71,13 @@ Re-home a task to another project (fix wrong auto-detection).
 .BI "cancel " [id]
 Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw
 log for audit).
+.TP
+.B undo
+Take back the last logged event on a day (today, or
+.BR --date )
+by dropping the log's last line. Repeat to walk further back. Because
+.B continue
+writes two events, undoing a carry-over takes two passes.
 .PP
 The state changes are idempotent: repeating one whose target state the task
 already holds \(em
@@ -260,6 +267,12 @@ default off),
 (the wj-tui panel arrangement \(em balanced|spotlight|golden|custom, default balanced; Shift+L cycles them live, z zooms the focused panel),
 .I sidebar
 (which side the wj-tui lists column sits on \(em left|right, default left),
+.I confirm
+(the wj-tui y/n guard before an action \(em all|destructive|off; default
+destructive, which guards only cancel/void and pending drop),
+.I icons
+(the wj-tui status markers \(em on uses Nerd-Font icons and needs a patched font,
+off uses the universal ASCII set; default off),
 .IR layout_sidebar ", " layout_split
 (optional overrides defining a
 .I custom

@@ -115,10 +115,35 @@ type searchMode struct {
 type confirmMode struct {
 	active    bool
 	prompt    string
-	verb      string   // wj verb to run on confirmation
-	valueArgs []string // args between the verb and --date (e.g. the task id)
-	raw       bool     // run as a plain mutate (no --date), e.g. for backlog drop
-	atTime    bool     // after confirming, prompt for an explicit --at time
+	verb      string    // wj verb to run on confirmation
+	valueArgs []string  // args between the verb and --date (e.g. the task id)
+	raw       bool      // run as a plain mutate (no --date), e.g. for backlog drop
+	atTime    bool      // after confirming, prompt for an explicit --at time
+	input     inputMode // after confirming, open this text prompt instead (amend/move)
+}
+
+// confirmLevel controls which actions pop a y/n guard, set from the `confirm`
+// config (all | destructive | off). "destructive" guards only the void/drop
+// actions; "all" guards every mutating action; "off" guards nothing (undo is the
+// safety net). The zero value is confirmOff, so test models opt in explicitly.
+type confirmLevel int
+
+const (
+	confirmOff confirmLevel = iota
+	confirmDestructive
+	confirmAll
+)
+
+// parseConfirmLevel maps the config string to a level (default: destructive).
+func parseConfirmLevel(s string) confirmLevel {
+	switch s {
+	case "all":
+		return confirmAll
+	case "off", "none":
+		return confirmOff
+	default: // "destructive", "", or anything unrecognised
+		return confirmDestructive
+	}
 }
 
 // Model is the root Bubble Tea model.
@@ -131,7 +156,7 @@ type Model struct {
 
 	g          *wj.Gantt
 	focusedDay int // index into g.Days
-	focusedRow int // sidebar Projects index: 0 = "All", i = g.Rows[i-1]
+	focusedRow int // sidebar Projects index into projRows() (Today then Window)
 
 	grid    *wj.Grid // intraday data for the focused day
 	selTask int      // index into filteredTasks()
@@ -161,6 +186,34 @@ type Model struct {
 	autoPause bool       // when true, start/resume pause the project's other running task
 	layout    int        // index into layouts (panel arrangement); cycled with Shift+L
 	zoomed    bool       // when true, the focused pane fills the screen (toggled with z)
+
+	confirmLevel confirmLevel // which actions pop a y/n guard (from the `confirm` config)
+}
+
+// needConfirm reports whether an action should pop a y/n guard. destructive marks
+// the void/drop actions, which are guarded at the "destructive" level too.
+func (m Model) needConfirm(destructive bool) bool {
+	switch m.confirmLevel {
+	case confirmAll:
+		return true
+	case confirmDestructive:
+		return destructive
+	default: // confirmOff
+		return false
+	}
+}
+
+// liveDelta is the whole minutes elapsed since today's status was fetched, added
+// to an in-progress task's tracked time so the Today list counts up between the
+// (coarser) data reloads. 0 until the first live status lands.
+func (m Model) liveDelta() int {
+	if m.liveAt.IsZero() {
+		return 0
+	}
+	if d := int(time.Since(m.liveAt).Minutes()); d > 0 {
+		return d
+	}
+	return 0
 }
 
 // activeLayout is the current panel-arrangement profile (clamped defensively).
@@ -177,11 +230,12 @@ func (m Model) activeLayout() layoutProfile {
 
 // New builds the initial model. from/to may be empty to use the CLI default
 // range; by defaults to "project".
-func New(cli wj.Client, from, to, by string) Model {
+func New(cli wj.Client, from, to, by, confirm string) Model {
 	if by == "" {
 		by = "project"
 	}
-	return Model{cli: cli, from: from, to: to, by: by, today: time.Now().Format(dateLayout), layout: defaultLayout}
+	return Model{cli: cli, from: from, to: to, by: by, today: time.Now().Format(dateLayout),
+		layout: defaultLayout, confirmLevel: parseConfirmLevel(confirm)}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -196,12 +250,158 @@ func (m Model) currentDay() string {
 	return m.g.Days[m.focusedDay]
 }
 
-// projectFilter is the project selected in the sidebar ("" = All / no filter).
+// projRow is one selectable entry in the Projects panel. The panel stacks two
+// sections: Today (derived from today's live status, so it is independent of the
+// browsing window) on top, then Window (the range gantt rows, led by an "All"
+// entry). focusedRow indexes the flattened list returned by projRows.
+type projRow struct {
+	project string // project to filter the day detail by; "" = All (no filter)
+	label   string
+	minutes int
+	today   bool // a Today-section row
+	isAll   bool // the Window "All" entry
+	running bool // today's in-progress project (drives the ">" glyph)
+}
+
+// todayRows aggregates today's tracked time (m.live) into Projects-panel rows,
+// honouring the by-project/by-task grouping. Empty when today has no work (or
+// today's status has not loaded), which collapses the panel to the Window list.
+func (m Model) todayRows() []projRow {
+	if m.live == nil || len(m.live.Tasks) == 0 {
+		return nil
+	}
+	delta := m.liveDelta() // count an in-progress task up between data reloads
+	if m.by == "task" {
+		rows := make([]projRow, 0, len(m.live.Tasks))
+		for _, t := range m.live.Tasks {
+			label := t.ID + " " + t.Project
+			if t.Desc != "" {
+				label = t.ID + " " + t.Desc
+			}
+			running := t.Status == "in-progress"
+			mins := t.Minutes
+			if running {
+				mins += delta
+			}
+			rows = append(rows, projRow{project: t.Project, label: label, minutes: mins,
+				today: true, running: running})
+		}
+		return rows
+	}
+	active := m.activeProject()
+	order := make([]string, 0, len(m.live.Tasks))
+	sum := make(map[string]int, len(m.live.Tasks))
+	for _, t := range m.live.Tasks {
+		if _, seen := sum[t.Project]; !seen {
+			order = append(order, t.Project)
+		}
+		sum[t.Project] += t.Minutes
+		if t.Status == "in-progress" {
+			sum[t.Project] += delta
+		}
+	}
+	rows := make([]projRow, 0, len(order))
+	for _, p := range order {
+		label := p
+		if label == "" {
+			label = "(no project)"
+		}
+		rows = append(rows, projRow{project: p, label: label, minutes: sum[p],
+			today: true, running: p != "" && p == active})
+	}
+	return rows
+}
+
+// windowSection is the range gantt as Projects-panel rows: an "All" entry then
+// one row per gantt row (project or task).
+func (m Model) windowSection() []projRow {
+	if m.g == nil {
+		return nil
+	}
+	total := 0
+	for _, r := range m.g.Rows {
+		total += r.TotalMinutes
+	}
+	active := m.activeProject()
+	rows := make([]projRow, 0, len(m.g.Rows)+1)
+	rows = append(rows, projRow{label: "All", minutes: total, isAll: true})
+	for _, r := range m.g.Rows {
+		p := rowProject(r)
+		rows = append(rows, projRow{project: p, label: r.Label, minutes: r.TotalMinutes,
+			running: p != "" && p == active})
+	}
+	return rows
+}
+
+// projRows is the full ordered list of selectable Projects-panel entries: the
+// Today section first, then the Window section.
+func (m Model) projRows() []projRow {
+	return append(m.todayRows(), m.windowSection()...)
+}
+
+// allRow is the index of the Window "All" entry — the no-filter default.
+func (m Model) allRow() int {
+	for i, r := range m.projRows() {
+		if r.isAll {
+			return i
+		}
+	}
+	return 0
+}
+
+// projectFilter is the project selected in the Projects panel ("" = All / no
+// filter); it drives the master→detail filtering of the focused day's tasks.
 func (m Model) projectFilter() string {
-	if m.g == nil || m.focusedRow <= 0 || m.focusedRow-1 >= len(m.g.Rows) {
+	rows := m.projRows()
+	if m.focusedRow < 0 || m.focusedRow >= len(rows) {
 		return ""
 	}
-	return rowProject(m.g.Rows[m.focusedRow-1])
+	return rows[m.focusedRow].project
+}
+
+// selectedToday reports whether the focused Projects row is in the Today section.
+func (m Model) selectedToday() bool {
+	rows := m.projRows()
+	return m.focusedRow >= 0 && m.focusedRow < len(rows) && rows[m.focusedRow].today
+}
+
+// projAnchor identifies a selected Projects row by identity (not raw index) so
+// the selection survives reloads that resize the dynamic Today section.
+type projAnchor struct {
+	today   bool
+	isAll   bool
+	project string
+	idx     int // ordinal fallback when no identity match remains
+}
+
+// currentAnchor snapshots the focused row's identity before a data swap.
+func (m Model) currentAnchor() projAnchor {
+	rows := m.projRows()
+	if m.focusedRow < 0 || m.focusedRow >= len(rows) {
+		return projAnchor{isAll: true}
+	}
+	r := rows[m.focusedRow]
+	return projAnchor{today: r.today, isAll: r.isAll, project: r.project, idx: m.focusedRow}
+}
+
+// anchorIndex re-resolves an anchor against the current projRows, preferring an
+// exact (section, project) match, then any project match, then the clamped idx.
+func (m Model) anchorIndex(a projAnchor) int {
+	rows := m.projRows()
+	if a.isAll {
+		return m.allRow()
+	}
+	for i, r := range rows {
+		if !r.isAll && r.today == a.today && r.project == a.project {
+			return i
+		}
+	}
+	for i, r := range rows {
+		if !r.isAll && r.project == a.project {
+			return i
+		}
+	}
+	return clamp(a.idx, 0, max2(0, len(rows)-1))
 }
 
 // filteredTasks is the focused day's tasks restricted to the selected project
