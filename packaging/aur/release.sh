@@ -18,9 +18,20 @@ AUR_SRC="$REPO/packaging/aur"          # source PKGBUILD lives here
 AUR_REPO="${WJ_AUR_REPO:-/tmp/wj-aur}" # clone of ssh://aur@aur.archlinux.org/wj.git
 PKGBUILD="$AUR_SRC/PKGBUILD"
 
+# Safety: this script commits to the CURRENT branch but pushes main, so it must
+# run from main; and `git commit -am` would sweep any stray edits into the
+# release commit, so the tree must be clean before we bump.
+BR="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || true)"
+[ "$BR" = main ] || { echo "release.sh: run from 'main' (currently on '$BR')" >&2; exit 1; }
+git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet \
+    || { echo "release.sh: working tree not clean — commit or stash first" >&2; exit 1; }
+
 echo "==> Releasing wj $V"
 
-# 1. Bump pkgver (and reset pkgrel) in the source PKGBUILD.
+# 1. Bump the version everywhere it is recorded: the CLI's WJ_VERSION, the man
+#    page's .TH line (keeping its year), and the PKGBUILD pkgver (reset pkgrel).
+sed -i "s/^WJ_VERSION=.*/WJ_VERSION=\"$V\"/"             "$REPO/wj"
+sed -i "1s/\"wj [0-9][0-9.]*\"/\"wj $V\"/"               "$REPO/wj.1"
 sed -i "s/^pkgver=.*/pkgver=$V/; s/^pkgrel=.*/pkgrel=1/" "$PKGBUILD"
 
 # 2. Commit the bump, push, and tag the release so GitHub builds the tarball.
