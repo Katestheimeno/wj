@@ -110,6 +110,13 @@ func TestClientMutate(t *testing.T) {
 	if _, err := cli.Mutate("amend", "T1", "Write the docs", "--date", day, "--at", "09:31"); err != nil {
 		t.Fatalf("amend: %v", err)
 	}
+	// tags: "#Urgent" normalises to "urgent", then untag removes it -> [billing]
+	if _, err := cli.Mutate("tag", "T1", "billing", "#Urgent", "--date", day); err != nil {
+		t.Fatalf("tag: %v", err)
+	}
+	if _, err := cli.Mutate("untag", "T1", "urgent", "--date", day); err != nil {
+		t.Fatalf("untag: %v", err)
+	}
 
 	st, err := cli.Status(day)
 	if err != nil {
@@ -120,6 +127,9 @@ func TestClientMutate(t *testing.T) {
 	}
 	if got := st.Tasks[0]; got.Status != "paused" || got.Desc != "Write the docs" || got.Minutes != 30 {
 		t.Fatalf("mutated task mismatch: %+v", got)
+	}
+	if got := st.Tasks[0].Tags; len(got) != 1 || got[0] != "billing" {
+		t.Fatalf("tags round-trip via real CLI: got %v, want [billing]", got)
 	}
 
 	// re-pausing an already-paused task is an idempotent no-op: no error, and

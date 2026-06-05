@@ -57,6 +57,17 @@ func (m Model) loadProjects() tea.Cmd {
 	}
 }
 
+func (m Model) loadTags() tea.Cmd {
+	cli := m.cli
+	return func() tea.Msg {
+		names, err := cli.Tags()
+		if err != nil {
+			return tagsMsg{}
+		}
+		return tagsMsg{names: names}
+	}
+}
+
 func (m Model) loadPending() tea.Cmd {
 	cli := m.cli
 	return func() tea.Msg {
@@ -89,7 +100,7 @@ func (m Model) mutate(args ...string) tea.Cmd {
 // reloadAll refreshes every panel from the CLI (used after a mutation).
 func (m Model) reloadAll() tea.Cmd {
 	cmds := []tea.Cmd{m.loadGantt(), m.loadGrid(m.currentDay()),
-		m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive(), m.loadPending()}
+		m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive(), m.loadPending(), m.loadTags()}
 	if m.search.active { // keep an open search overlay in sync with mutations
 		cmds = append(cmds, m.runSearch(m.search.query))
 	}

@@ -85,7 +85,8 @@ seed_data() {
         case $1 in
         0)  # typical dev day: standup, deep work with a break + note, a rename+move, a deferral
             id=$(start_task 09:05 meetings "daily standup");       act complete "$id" 09:18
-            id=$(start_task 09:25 backend "$(pick BE)");           note_on 09:55 backend "narrowed it to the cache layer"
+            id=$(start_task 09:25 backend "$(pick BE)");           "$WJ" tag "$id" billing --date "$D" >/dev/null 2>&1 || true
+            note_on 09:55 backend "narrowed it to the cache layer"
             act pause "$id" 11:00 "coffee";                        act resume "$id" 11:15
             act complete "$id" 12:40
             id=$(start_task 13:35 frontend "$(pick FE)");          act amend "$id" 14:10 "$(pick FE) (take two)"
@@ -146,6 +147,10 @@ seed_data() {
     id=$(start_task "$(ago 60)" docs "$(pick DOC)");               act defer "$id" "$(ago 40)" "needs review first"
     id=$(start_task "$(ago 70)" backend "wire up the new endpoint")   # left running → drives the live clock
     note_on "$(ago 25)" backend "happy path works; handling errors next"
+    # a few cross-cutting tags so the #chips and `report --by tag` have data
+    "$WJ" tag T2 billing review --date "$D" >/dev/null 2>&1 || true
+    "$WJ" tag T4 blocked        --date "$D" >/dev/null 2>&1 || true
+    "$WJ" tag T5 release urgent --date "$D" >/dev/null 2>&1 || true
 
     # carry the most recent weekday's task into today (exercises `continue`)
     local pday back

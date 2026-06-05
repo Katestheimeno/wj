@@ -162,6 +162,8 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `wj log <note>` | Attach a timestamped note to the running task. |
 | `wj amend [id] <desc>` | Replace a task's description (running task, or a given id). Appends an event — history is never rewritten. |
 | `wj move [id] <proj>` | Re-home a task to another project (fix wrong auto-detection). |
+| `wj tag <id> <tag…>` | Add one or more free-form labels to a task — a cross-cutting axis beside its project. Normalized (lowercased; a leading `#` and spaces stripped, so `"High Priority"` → `high-priority`). Matched by `search`, aggregated by `report --by tag`. |
+| `wj untag <id> <tag…>` | Remove labels from a task. |
 | `wj cancel [id]` | Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw log for audit). |
 | `wj undo` | Take back the last logged event on a day (today, or `--date`) — drops the log's last line. Repeat to walk further back. (`continue` writes two events, so undoing a carry-over takes two passes.) |
 | `wj ls` | List currently-open tasks (in-progress / paused / deferred). Today by default; `--days N` scans the last N days (adds a DATE column) to catch timers left running earlier. |
@@ -169,7 +171,7 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
 | `wj grid [date]` | Slot-by-slot schedule for a day. |
 | `wj gantt [flags]` | Multi-day overview: a rows×days matrix of time totals. Rows are projects (or per-day tasks with `--by task`); columns are days. Default range: the last 7 days through `--to` (or today). Cancelled and zero-time rows are omitted. The CLI counterpart of the TUI's Range view. |
-| `wj search <query>` | Find tasks across **all** recorded days by a case-insensitive substring of the id, project, or description. Most-recent first; `--json` for the UI's `/` overlay. |
+| `wj search <query>` | Find tasks across **all** recorded days by a case-insensitive substring of the id, project, description, **or tags**. Most-recent first; `--json` for the UI's `/` overlay. |
 | `wj report [flags]` | Aggregate time over a date range, grouped by `--by`. |
 | `wj export [flags]` | Dump raw events as csv/json/tsv over a date range. |
 | `wj ui` | Launch the optional `wj-tui` front-end (see [Terminal UI](#terminal-ui-optional)). A bare `wj` opens it too when `interface=ui`. |
@@ -186,7 +188,7 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `--date YYYY-MM-DD` | any write command + status, grid, ls, show | Act on another day, not today (alias `--on`). Combine with `--at` to reconstruct any past day. On a past day **without** `--at`, the time is inferred from that day's last event (or `shift_start`) and the inference is printed. |
 | `--project NAME` | start (where the task lives); pause/complete/defer/log/resume/amend/cancel (scope) | Override project detection. Quote names with spaces. |
 | `--from D --to D` | report, export, gantt | Inclusive date range `YYYY-MM-DD`. For `gantt`, `--to` (or `--date`/`--on`) is the range end and `--from` the start; if `--from` is omitted it defaults to 6 days before `--to` (last 7 days). For `report`/`export`, default is today. |
-| `--by KEY` | report, gantt | Group rows. `report`: `project` \| `task` \| `day`. `gantt`: `project` \| `task`. Default: `project`. |
+| `--by KEY` | report, gantt | Group rows. `report`: `project` \| `task` \| `day` \| `tag`. `gantt`: `project` \| `task`. Default: `project`. (`--by tag` fans a task out across each of its tags, so the report TOTAL can exceed real tracked time.) |
 | `--format FMT` | export | `csv` \| `json` \| `tsv`. Default: `csv`. |
 | `--days N` | ls | How many days back to scan for open tasks. Default: `1` (today). |
 | `--due YYYY-MM-DD` | add | Optional deadline for a pending task. |
@@ -239,7 +241,7 @@ timestamp           task_id  project        event     note
 2026-06-01T11:30    T1       backend        complete
 ```
 
-Events: `start` · `pause` · `resume` · `complete` · `defer` · `log` · `amend` · `move` · `cancel`.
+Events: `start` · `pause` · `resume` · `complete` · `defer` · `log` · `amend` · `move` · `tag` · `untag` · `cancel`.
 A task's description is the note on its `start` event; its status, time totals and
 grid placement are all computed by replaying the rows.
 
@@ -358,8 +360,12 @@ onto its day and selecting it.
 
 Mutations run the same commands as the CLI, on the selected task: `p` pause,
 `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥` project
-autocomplete), `n` log a note, `x` cancel (void), and `o` carry a past day's task
-over to today; `u` undoes the last logged event on the focused day. `s` starts a
+autocomplete), `n` log a note, `#` edit **tags** (space-separated; a `-tag`
+removes; `⇥` completes a known tag), `x` cancel (void), and `o` carry a past
+day's task over to today; `u` undoes the last logged event on the focused day.
+Tags are a cross-cutting label beside the project — they show as `#chips` on the
+Timeline and search results, `/` search finds them, and `wj report --by tag`
+aggregates by them. `s` starts a
 brand-new task — type a description with an optional inline `@project` (`⇥`
 completes a known project, or just type a new name; omit it to auto-detect) and
 an optional inline `%time` (e.g. `%9:30`) to backdate the start — omit it for now.

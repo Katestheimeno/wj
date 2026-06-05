@@ -63,6 +63,9 @@ type liveMsg struct {
 // projectsMsg carries the list of known projects (for move autocomplete).
 type projectsMsg struct{ names []string }
 
+// tagsMsg carries every tag ever used (for the tag-editor autocomplete).
+type tagsMsg struct{ names []string }
+
 // searchMsg carries the results of a global task search. The query is echoed
 // back so a result for a query the user has since edited can be discarded.
 type searchMsg struct {
@@ -181,6 +184,7 @@ type Model struct {
 	live      *wj.Status // today's status, for the running-task header clock
 	liveAt    time.Time  // wall-clock time m.live was fetched
 	projects  []string   // known project names (move autocomplete)
+	tags      []string   // known tag names (tag-editor autocomplete)
 	tickN     int        // 1s ticks since start; data reloads every dataEveryTicks
 	tlOffset  int        // timeline scroll position
 	autoPause bool       // when true, start/resume pause the project's other running task
@@ -239,7 +243,7 @@ func New(cli wj.Client, from, to, by, confirm string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadPending(), tickCmd())
+	return tea.Batch(m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadTags(), m.loadPending(), tickCmd())
 }
 
 // currentDay is the YYYY-MM-DD of the focused day column ("" if none).

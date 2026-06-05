@@ -254,6 +254,18 @@ normalize_project() {
     printf '%s' "${p,,}"
 }
 
+# canonicalise a tag: drop a leading '#', lowercase, spaces->hyphens, keep only
+# [a-z0-9-], and trim stray hyphens. Empty output means "not a usable tag".
+normalize_tag() {
+    local t=${1,,}
+    t=${t#\#}
+    t=${t// /-}
+    t=${t//[^a-z0-9-]/}
+    while [[ $t == *"--"* ]]; do t=${t//--/-}; done   # squeeze hyphen runs
+    t=${t#-}; t=${t%-}
+    printf '%s' "$t"
+}
+
 # detect project from git remote -> repo toplevel -> default, canonicalised
 detect_project() {
     local p
@@ -333,21 +345,21 @@ acquire_lock() {
 #   _R_OPEN (start-minute of the open interval). _R_IDS keeps first-seen order;
 #   _R_SEEN marks membership.
 _R_FILE="__none__"
-declare -A _R_DESC=() _R_PROJ=() _R_STATUS=() _R_CANCEL=() _R_CLOSED=() _R_OPEN=() _R_ACTIVE=() _R_SEEN=()
+declare -A _R_DESC=() _R_PROJ=() _R_STATUS=() _R_CANCEL=() _R_CLOSED=() _R_OPEN=() _R_ACTIVE=() _R_SEEN=() _R_TAGS=()
 declare -a _R_IDS=()
 replay_day() {
     local file=$1
     [[ $_R_FILE == "$file" ]] && return 0
     _R_FILE=$file
-    _R_DESC=(); _R_PROJ=(); _R_STATUS=(); _R_CANCEL=(); _R_CLOSED=(); _R_OPEN=(); _R_ACTIVE=(); _R_SEEN=(); _R_IDS=()
+    _R_DESC=(); _R_PROJ=(); _R_STATUS=(); _R_CANCEL=(); _R_CLOSED=(); _R_OPEN=(); _R_ACTIVE=(); _R_SEEN=(); _R_TAGS=(); _R_IDS=()
     [[ -f $file ]] || return 0
-    local ts id proj evt note hh mm m
+    local ts id proj evt note hh mm m t x newt
     while IFS=$'\t' read -r ts id proj evt note; do
         [[ -n $id ]] || continue
         if [[ -z ${_R_SEEN[$id]:-} ]]; then
             _R_SEEN[$id]=1; _R_IDS+=("$id")
             _R_CLOSED[$id]=0; _R_ACTIVE[$id]=0; _R_CANCEL[$id]=0
-            _R_DESC[$id]=""; _R_PROJ[$id]=""; _R_STATUS[$id]=""
+            _R_DESC[$id]=""; _R_PROJ[$id]=""; _R_STATUS[$id]=""; _R_TAGS[$id]=""
         fi
         hh=${ts:11:2}; mm=${ts:14:2}; m=$(( 10#$hh * 60 + 10#$mm ))
         case $evt in
@@ -359,6 +371,16 @@ replay_day() {
                 (( _R_ACTIVE[$id] )) || { _R_ACTIVE[$id]=1; _R_OPEN[$id]=$m; } ;;
             amend) _R_DESC[$id]=$note ;;
             move)  _R_PROJ[$id]=$proj ;;
+            tag)   # note holds one or more space-separated tags to add (set union)
+                for t in $note; do
+                    case " ${_R_TAGS[$id]} " in *" $t "*) :;; *) _R_TAGS[$id]="${_R_TAGS[$id]}${_R_TAGS[$id]:+ }$t";; esac
+                done ;;
+            untag) # note holds tags to remove
+                for t in $note; do
+                    newt=""
+                    for x in ${_R_TAGS[$id]}; do [[ $x != "$t" ]] && newt="${newt}${newt:+ }$x"; done
+                    _R_TAGS[$id]=$newt
+                done ;;
             pause|complete|defer)
                 case $evt in pause) _R_STATUS[$id]=paused;; complete) _R_STATUS[$id]=completed;; defer) _R_STATUS[$id]=deferred;; esac
                 (( _R_ACTIVE[$id] )) && { _R_CLOSED[$id]=$(( _R_CLOSED[$id] + m - _R_OPEN[$id] )); _R_ACTIVE[$id]=0; } ;;
@@ -385,6 +407,9 @@ task_desc() { replay_day "$1"; printf '%s' "${_R_DESC[$2]:-}"; }
 
 # a task's project: its `start` project, overridden by the latest `move`
 task_project() { replay_day "$1"; printf '%s' "${_R_PROJ[$2]:-}"; }
+
+# a task's current tags (space-separated, set-union of tag minus untag events)
+task_tags() { replay_day "$1"; printf '%s' "${_R_TAGS[$2]:-}"; }
 
 # whether a task has been cancelled (voided)
 task_cancelled() { replay_day "$1"; [[ ${_R_CANCEL[$2]:-0} == 1 ]]; }
@@ -760,6 +785,31 @@ cmd_move() {
     printf '%s  %s  moved  %s -> %s\n' "$id" "${ts:11:5}" "$oldproj" "$newproj"
 }
 
+cmd_tag()   { _tag_op tag; }
+cmd_untag() { _tag_op untag; }
+
+# add (tag) or remove (untag) free-form labels on a task — a cross-cutting axis
+# beside its project. Tags are normalized and stored as a set; the event log
+# keeps the history (a `tag`/`untag` event per invocation). Search matches them
+# and `report --by tag` aggregates by them.
+_tag_op() {
+    local evt=$1 ts file id t norm verb
+    ts=$(now_ts); file=$(day_file "${ts:0:10}")
+    id=${ARGS[0]:-}
+    [[ $id =~ ^T[0-9]+$ ]] || die "$evt needs a task id (e.g. wj $evt T1 billing)"
+    task_exists "$file" "$id" || die "no such task today: $id"
+    (( ${#ARGS[@]} >= 2 )) || die "$evt needs at least one tag (e.g. wj $evt $id urgent)"
+    norm=""
+    for t in "${ARGS[@]:1}"; do
+        t=$(normalize_tag "$t")
+        [[ -n $t ]] && norm="${norm}${norm:+ }$t"
+    done
+    [[ -n $norm ]] || die "no usable tags (letters/digits/-, e.g. billing or high-priority)"
+    append_event "$ts" "$id" "$(task_project "$file" "$id")" "$evt" "$norm"
+    verb=tagged; [[ $evt == untag ]] && verb=untagged
+    printf '%s  %s  %s  %s\n' "$id" "${ts:11:5}" "$verb" "$norm"
+}
+
 cmd_cancel() {
     local ts file proj id
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
@@ -994,7 +1044,7 @@ iter_dates() {
 cmd_report() {
     local from=${FROM:-$TODAY} to=${TO:-$TODAY}
     declare -A AGG=()
-    local d file id nm key
+    local d file id nm key mins t tags
     while read -r d; do
         file=$(day_file "$d")
         [[ -f $file ]] || continue
@@ -1006,7 +1056,12 @@ cmd_report() {
                 project) key=$(task_project "$file" "$id") ;;
                 task)    key="$id  $(task_desc "$file" "$id")" ;;
                 day)     key=$d ;;
-                *)       die "--by must be project|task|day" ;;
+                tag)     # fan out: a task's time counts toward each of its tags
+                    mins=$(task_minutes "$file" "$id" "$nm")
+                    tags=$(task_tags "$file" "$id"); [[ -n $tags ]] || tags="(untagged)"
+                    for t in $tags; do AGG[$t]=$(( ${AGG[$t]:-0} + mins )); done
+                    continue ;;
+                *)       die "--by must be project|task|day|tag" ;;
             esac
             AGG[$key]=$(( ${AGG[$key]:-0} + $(task_minutes "$file" "$id" "$nm") ))
         done < <(task_ids "$file")
@@ -1045,6 +1100,16 @@ json_str() {
     printf '"%s"' "$s"
 }
 
+# a JSON array of strings from a space-separated list (e.g. tags). Empty -> [].
+json_arr() {
+    local first=1 x out='['
+    for x in $1; do
+        (( first )) && first=0 || out+=','
+        out+=$(json_str "$x")
+    done
+    printf '%s]' "$out"
+}
+
 # ---------------------------------------------------------------------------
 # JSON emitters — the machine-readable read contract consumed by the wj-tui
 # front-end. All derivation (status, minutes, segments, aggregation) is reused
@@ -1064,8 +1129,9 @@ json_status() {
             mins=$(task_minutes "$file" "$id" "$nm"); desc=$(task_desc "$file" "$id")
             tot=$(( tot + mins ))
             (( first )) && first=0 || printf ','
-            printf '{"id":%s,"project":%s,"status":%s,"minutes":%d,"desc":%s}' \
-                "$(json_str "$id")" "$(json_str "$p")" "$(json_str "$st")" "$mins" "$(json_str "$desc")"
+            printf '{"id":%s,"project":%s,"status":%s,"minutes":%d,"desc":%s,"tags":%s}' \
+                "$(json_str "$id")" "$(json_str "$p")" "$(json_str "$st")" "$mins" "$(json_str "$desc")" \
+                "$(json_arr "$(task_tags "$file" "$id")")"
         done < <(task_ids "$file")
     fi
     printf '],"total_minutes":%d}\n' "$tot"
@@ -1074,10 +1140,10 @@ json_status() {
 # full event timeline of one task
 json_show() {
     local d=$1 file=$2 id=$3 nm=$4
-    printf '{"id":%s,"date":%s,"project":%s,"status":%s,"desc":%s,"minutes":%d,"events":[' \
+    printf '{"id":%s,"date":%s,"project":%s,"status":%s,"desc":%s,"minutes":%d,"tags":%s,"events":[' \
         "$(json_str "$id")" "$(json_str "$d")" "$(json_str "$(task_project "$file" "$id")")" \
         "$(json_str "$(task_status "$file" "$id")")" "$(json_str "$(task_desc "$file" "$id")")" \
-        "$(task_minutes "$file" "$id" "$nm")"
+        "$(task_minutes "$file" "$id" "$nm")" "$(json_arr "$(task_tags "$file" "$id")")"
     local first=1 ts xid xp evt note
     while IFS=$'\t' read -r ts xid xp evt note; do
         [[ $xid == "$id" ]] || continue
@@ -1134,10 +1200,11 @@ json_grid() {
             [[ -z $id ]] && continue
             task_cancelled "$file" "$id" && continue
             (( first )) && first=0 || printf ','
-            printf '{"id":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"segments":%s}' \
+            printf '{"id":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s,"segments":%s}' \
                 "$(json_str "$id")" "$(json_str "$(task_project "$file" "$id")")" \
                 "$(json_str "$(task_desc "$file" "$id")")" "$(json_str "$(task_status "$file" "$id")")" \
-                "$(task_minutes "$file" "$id" "$nm")" "$(json_segments "$file" "$id" "$nm")"
+                "$(task_minutes "$file" "$id" "$nm")" "$(json_arr "$(task_tags "$file" "$id")")" \
+                "$(json_segments "$file" "$id" "$nm")"
         done < <(task_ids "$file")
     fi
     printf ']}\n'
@@ -1376,7 +1443,7 @@ cmd_search() {
     local first=1 found=0
 
     if [[ -d $WJ_DATA_DIR ]]; then
-        local file base dd mm yyyy d id proj desc st mins nm hay
+        local file base dd mm yyyy d id proj desc st mins nm hay tags
         while IFS= read -r file; do
             base=${file%.tsv}
             dd=${base##*/};   base=${base%/*}
@@ -1390,16 +1457,17 @@ cmd_search() {
                 task_cancelled "$file" "$id" && continue
                 proj=$(task_project "$file" "$id")
                 desc=$(task_desc "$file" "$id")
-                hay="$id $proj $desc"
+                tags=$(task_tags "$file" "$id")
+                hay="$id $proj $desc $tags"
                 [[ -z $ql || ${hay,,} == *"$ql"* ]] || continue
                 st=$(task_status "$file" "$id")
                 mins=$(task_minutes "$file" "$id" "$nm")
                 found=1
                 if (( JSON )); then
                     (( first )) && first=0 || printf ','
-                    printf '{"id":%s,"date":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d}' \
+                    printf '{"id":%s,"date":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s}' \
                         "$(json_str "$id")" "$(json_str "$d")" "$(json_str "$proj")" \
-                        "$(json_str "$desc")" "$(json_str "$st")" "$mins"
+                        "$(json_str "$desc")" "$(json_str "$st")" "$mins" "$(json_arr "$tags")"
                 else
                     printf '%-12s  %-4s  %-16.16s  %-8s  %7s  %s\n' \
                         "$d" "$id" "$proj" "$st" "$(fmt_dur "$mins")" "$desc"
@@ -1453,6 +1521,14 @@ list_projects() {
         | sort -u | grep -v '^$'
 }
 
+# every tag ever applied (from `tag` events), for completion / the TUI editor.
+list_tags() {
+    [[ -d $WJ_DATA_DIR ]] || return 0
+    find "$WJ_DATA_DIR" -name '*.tsv' -type f \
+        -exec awk -F'\t' '$4=="tag"{n=split($5,a," ");for(i=1;i<=n;i++)print a[i]}' {} + 2>/dev/null \
+        | sort -u | grep -v '^$'
+}
+
 cmd_completion() {
     local shell=${ARGS[0]:-bash}
     case $shell in bash|zsh) ;; *) die "completion supports: bash | zsh" ;; esac
@@ -1462,14 +1538,14 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start continue pause resume complete defer log amend move cancel undo ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
+    cmds="start continue pause resume complete defer log amend move tag untag cancel undo ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
     flags="--at --date --project --from --to --format --by --days --due --json --parallel --auto-pause"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
     fi
     case $prev in
         --format)    COMPREPLY=( $(compgen -W "csv json tsv" -- "$cur") ); return ;;
-        --by)        COMPREPLY=( $(compgen -W "project task day" -- "$cur") ); return ;;
+        --by)        COMPREPLY=( $(compgen -W "project task day tag" -- "$cur") ); return ;;
         --project)   COMPREPLY=( $(compgen -W "$(wj _projects 2>/dev/null)" -- "$cur") ); return ;;
         completion)  COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") ); return ;;
     esac
@@ -1478,6 +1554,12 @@ _wj() {
     case $cmd in
         continue|pause|resume|complete|defer|amend|move|cancel|show)
             COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") ) ;;
+        tag|untag)
+            if (( COMP_CWORD >= 3 )); then
+                COMPREPLY=( $(compgen -W "$(wj _tags 2>/dev/null)" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") )
+            fi ;;
         drop|due|raise|lower)
             COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") ) ;;
         start)
@@ -1521,6 +1603,11 @@ TASK COMMANDS
   amend [id] <desc>   Replace a task's description (running task, or given id).
                       Keeps history: appends an event, never rewrites the log.
   move  [id] <proj>   Re-home a task to another project (fix wrong auto-detection).
+  tag   <id> <tag..>  Add one or more free-form labels to a task — a cross-cutting
+                      axis beside its project. Normalized (lowercased, '#' and
+                      spaces stripped, e.g. "High Priority" -> high-priority).
+                      Searchable, and `report --by tag` aggregates by them.
+  untag <id> <tag..>  Remove labels from a task.
   cancel [id]         Void a mistaken task: 0 time, hidden from status/grid/report
                       (kept in the raw log / export for audit).
   undo                Take back the last logged event on the day (today, or --date)
@@ -1578,8 +1665,9 @@ FLAGS
                       --project meetings / --project "maroc ventes" / --project admin.
                       On start: where the task lives. On pause/complete/etc: scope.
   --from D --to D     Inclusive date range YYYY-MM-DD (report, export, gantt).
-  --by KEY            row grouping: project | task | day (report); project | task
-                      (gantt). Default: project.
+  --by KEY            row grouping: project | task | day | tag (report); project |
+                      task (gantt). Default: project. (--by tag fans a task out
+                      across each of its tags, so the TOTAL can exceed real time.)
   --due YYYY-MM-DD    add: optional deadline for a pending task.
   --format FMT        export format: csv | json | tsv. Default: csv.
   --parallel          start/resume: leave any other running task in the same
@@ -1679,7 +1767,7 @@ main() {
     # mutating commands take a process-wide lock so concurrent invocations can't
     # interleave their read-derive-append sequences (see acquire_lock).
     case $cmd in
-        start|continue|pause|resume|complete|defer|log|amend|move|cancel|undo|add|drop|due|raise|lower)
+        start|continue|pause|resume|complete|defer|log|amend|move|cancel|tag|untag|undo|add|drop|due|raise|lower)
             acquire_lock ;;
     esac
     case $cmd in
@@ -1729,6 +1817,8 @@ main() {
         log)      cmd_log ;;
         amend)    cmd_amend ;;
         move)     cmd_move ;;
+        tag)      cmd_tag ;;
+        untag)    cmd_untag ;;
         cancel)   cmd_cancel ;;
         undo)     cmd_undo ;;
         ls)       cmd_ls ;;
@@ -1749,6 +1839,7 @@ main() {
         _tasks)   list_task_ids ;;
         _pending) list_pending_ids ;;
         _projects) list_projects ;;
+        _tags)    list_tags ;;
         help|-h|--help) cmd_help ;;
         *)        die "unknown command: $cmd (try 'wj help')" ;;
     esac

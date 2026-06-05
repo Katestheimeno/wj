@@ -1597,3 +1597,75 @@ func TestIndicatorsRespectIconToggle(t *testing.T) {
 		t.Errorf("rollup should space the glyph from the count ('> 2'), got %q", roll)
 	}
 }
+
+func TestPendingAddProjectAutocomplete(t *testing.T) {
+	m := pendingModel()
+	m.projects = []string{"backend", "backlog", "frontend"}
+	m.input = inputMode{active: true, action: "add", value: "fix the bug @ba"}
+	tab := func(mm Model) Model { n, _ := mm.handleKey(tea.KeyMsg{Type: tea.KeyTab}); return n.(Model) }
+	m = tab(m)
+	if m.input.value != "fix the bug @backend" {
+		t.Fatalf("tab 1 -> %q, want 'fix the bug @backend'", m.input.value)
+	}
+	m = tab(m) // cycles to the next @ba* match, keeping the description intact
+	if m.input.value != "fix the bug @backlog" {
+		t.Fatalf("tab 2 -> %q, want 'fix the bug @backlog'", m.input.value)
+	}
+}
+
+func TestParseTagInput(t *testing.T) {
+	adds, removes := parseTagInput("billing -urgent #priority -")
+	if strings.Join(adds, ",") != "billing,#priority" {
+		t.Errorf("adds = %v, want [billing #priority]", adds)
+	}
+	if strings.Join(removes, ",") != "urgent" {
+		t.Errorf("removes = %v, want [urgent]", removes)
+	}
+}
+
+func TestTagEditorOpensAndSubmits(t *testing.T) {
+	m := drilled() // confirmAll, so '#' arms a confirm first
+	m, _ = mustModel(m.handleKey(keyMsg("#")))
+	if !m.confirm.active || !m.confirm.input.active {
+		t.Fatalf("'#' should arm a tags confirm, got %+v", m.confirm)
+	}
+	m, _ = mustModel(m.handleKey(keyMsg("y")))
+	if !m.input.active || m.input.action != "tags" || m.input.taskID != "T1" {
+		t.Fatalf("confirming '#' should open the tags editor for T1, got %+v", m.input)
+	}
+	m.input.value = "billing -urgent"
+	if _, cmd := m.handleKey(keyMsg("enter")); cmd == nil {
+		t.Error("submitting tags should issue tag/untag commands")
+	}
+}
+
+func TestTagAutocomplete(t *testing.T) {
+	tab := func(mm Model) Model { n, _ := mm.handleKey(tea.KeyMsg{Type: tea.KeyTab}); return n.(Model) }
+	m := drilled()
+	m.tags = []string{"billing", "backend-fix", "urgent"}
+	m.input = inputMode{active: true, action: "tags", value: "fix it b"}
+	m = tab(m)
+	if m.input.value != "fix it billing" {
+		t.Fatalf("tab1 -> %q, want 'fix it billing'", m.input.value)
+	}
+	m = tab(m)
+	if m.input.value != "fix it backend-fix" {
+		t.Fatalf("tab2 -> %q, want 'fix it backend-fix'", m.input.value)
+	}
+	// a removal token keeps its leading '-'
+	m2 := drilled()
+	m2.tags = []string{"urgent"}
+	m2.input = inputMode{active: true, action: "tags", value: "-u"}
+	if got := tab(m2).input.value; got != "-urgent" {
+		t.Fatalf("removal autocomplete -> %q, want '-urgent'", got)
+	}
+}
+
+func TestTimelineShowsTags(t *testing.T) {
+	m := drilled()
+	m.show.Tags = []string{"billing", "urgent"}
+	out := m.renderTimeline(60, 100)
+	if !strings.Contains(out, "#billing") || !strings.Contains(out, "#urgent") {
+		t.Errorf("timeline should render tag chips:\n%s", out)
+	}
+}

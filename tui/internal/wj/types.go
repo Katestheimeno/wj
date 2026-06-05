@@ -14,22 +14,24 @@ type Status struct {
 
 // Task is one row of a day's status table.
 type Task struct {
-	ID      string `json:"id"`
-	Project string `json:"project"`
-	Status  string `json:"status"`
-	Minutes int    `json:"minutes"`
-	Desc    string `json:"desc"`
+	ID      string   `json:"id"`
+	Project string   `json:"project"`
+	Status  string   `json:"status"`
+	Minutes int      `json:"minutes"`
+	Desc    string   `json:"desc"`
+	Tags    []string `json:"tags"`
 }
 
 // Show mirrors `wj show <id> --json`: the full event timeline of one task.
 type Show struct {
-	ID      string  `json:"id"`
-	Date    string  `json:"date"`
-	Project string  `json:"project"`
-	Status  string  `json:"status"`
-	Desc    string  `json:"desc"`
-	Minutes int     `json:"minutes"`
-	Events  []Event `json:"events"`
+	ID      string   `json:"id"`
+	Date    string   `json:"date"`
+	Project string   `json:"project"`
+	Status  string   `json:"status"`
+	Desc    string   `json:"desc"`
+	Minutes int      `json:"minutes"`
+	Tags    []string `json:"tags"`
+	Events  []Event  `json:"events"`
 }
 
 // Event is one entry in a task's timeline.
@@ -57,6 +59,7 @@ type GridTask struct {
 	Desc     string    `json:"desc"`
 	Status   string    `json:"status"`
 	Minutes  int       `json:"minutes"`
+	Tags     []string  `json:"tags"`
 	Segments []Segment `json:"segments"`
 }
 
@@ -90,12 +93,13 @@ type Pending struct {
 // Found is one hit from `wj search --json`: a task located by id/project/desc
 // substring, on a specific day. The (ID, Date) pair is enough to jump to it.
 type Found struct {
-	ID      string `json:"id"`
-	Date    string `json:"date"`
-	Project string `json:"project"`
-	Desc    string `json:"desc"`
-	Status  string `json:"status"`
-	Minutes int    `json:"minutes"`
+	ID      string   `json:"id"`
+	Date    string   `json:"date"`
+	Project string   `json:"project"`
+	Desc    string   `json:"desc"`
+	Status  string   `json:"status"`
+	Minutes int      `json:"minutes"`
+	Tags    []string `json:"tags"`
 }
 
 // GanttRow is one project (or task) row. PerDay maps a date (YYYY-MM-DD) to

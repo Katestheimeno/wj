@@ -610,7 +610,7 @@ func (m Model) footerLine() string {
 	case paneRange:
 		return "j/k project · T today/window · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · z zoom · b by · / search · s start · ? help"
 	case paneDay:
-		return "j/k task · h/l panel · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · o carry-over · u undo · / search · ?"
+		return "j/k task · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · # tags · o carry-over · u undo · / search · ?"
 	case panePending:
 		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h/l panel · z zoom · ? help"
 	default:
@@ -636,6 +636,9 @@ func (m Model) searchOverlay(w int) string {
 	for i, r := range m.search.results {
 		g, gc := statusGlyph(r.Status)
 		meta := fmt.Sprintf("[%s]  %s  %s", r.Project, r.Date, fmtDur(r.Minutes))
+		if len(r.Tags) > 0 {
+			meta += "  #" + strings.Join(r.Tags, " #")
+		}
 		desc := r.Desc
 		if desc == "" {
 			desc = "(no description)"
@@ -697,6 +700,7 @@ func (m Model) helpOverlay() string {
 		{"P / R / C / D", "same, but prompt for an explicit time (--at)"},
 		{"a / m", "amend description / move (⇥ completes project)"},
 		{"n", "add a note (log) to the running task"},
+		{"#", "edit tags (space-separated; -tag removes; ⇥ completes a known tag)"},
 		{"o", "carry over (continue) a past day's task today — copies desc + project to a new id"},
 		{"x / X", "cancel (void) — destructive · X also prompts for a time"},
 		{"u", "undo the last logged event on the focused day"},
@@ -782,6 +786,23 @@ func (m Model) renderProjects(cw, maxRows int) string {
 		disp = append(disp, listLine(glyph, gc, lc, r.label, fmtDur(r.minutes), i == m.focusedRow, cw))
 	}
 	return strings.Join(windowRows(disp, activeDisp, maxRows), "\n")
+}
+
+// tagColor is the single hue used for "#tag" chips (kept distinct from the
+// per-project palette so tags read as a separate, secondary axis).
+var tagColor = lipgloss.Color("111")
+
+// renderTags formats a task's tags as space-separated "#tag" chips ("" if none).
+func renderTags(tags []string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	st := lipgloss.NewStyle().Foreground(tagColor)
+	parts := make([]string, len(tags))
+	for i, t := range tags {
+		parts[i] = st.Render("#" + t)
+	}
+	return strings.Join(parts, " ")
 }
 
 // sectionHeader renders a bold sub-header that labels a Projects-panel section
@@ -1075,8 +1096,12 @@ func (m Model) renderTimeline(innerW, maxBody int) string {
 		// columns: 2 gutter + time(5) + 2 + status(9, left) + 2, then the desc
 		rows[i] = hangingRow(fmt.Sprintf("  %s  %-9s  ", e.Time, label), extra, cw)
 	}
-	rows = windowRows(rows, m.tlOffset, maxBody-1-lineCount(head)) // head (wraps) + sub line
-	return head + "\n" + sub + "\n" + strings.Join(rows, "\n")
+	header := head + "\n" + sub
+	if tg := renderTags(s.Tags); tg != "" { // a tags line under the project/status
+		header += "\n" + tg
+	}
+	rows = windowRows(rows, m.tlOffset, maxBody-lineCount(header))
+	return header + "\n" + strings.Join(rows, "\n")
 }
 
 // timelineLabel maps an event to its human label + trailing detail (mirrors the

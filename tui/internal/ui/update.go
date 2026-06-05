@@ -40,6 +40,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projects = msg.names
 		return m, nil
 
+	case tagsMsg:
+		m.tags = msg.names
+		return m, nil
+
 	case pendingMsg:
 		if msg.err == nil {
 			m.pending = msg.items
@@ -434,6 +438,11 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		next, cmd := m.armOrInput(inputMode{active: true, action: "log",
 			prompt: "log (note on the running task)"}, false, "log a note?")
 		return next, cmd, true
+	case "#": // edit tags: space-separated; a -tag removes; ⇥ completes
+		next, cmd := m.armOrInput(inputMode{active: true, action: "tags", taskID: id,
+			prompt: "tags for " + id + " (space-separated; -tag removes; ⇥ completes)"},
+			false, "edit tags on "+id+"?")
+		return next, cmd, true
 	case "x": // void — destructive
 		next, cmd := m.armOrMutate("cancel", []string{id}, true, "cancel (void) "+id+"?")
 		return next, cmd, true
@@ -637,6 +646,21 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				d = "-"
 			}
 			return m, m.mutate("due", in.taskID, d)
+		case "tags": // add/remove tags on a task (a "-tag" token removes)
+			adds, removes := parseTagInput(val)
+			m.closeInput()
+			day := m.currentDay()
+			var cmds []tea.Cmd
+			if len(adds) > 0 {
+				cmds = append(cmds, m.mutate(append(append([]string{"tag", in.taskID}, adds...), "--date", day)...))
+			}
+			if len(removes) > 0 {
+				cmds = append(cmds, m.mutate(append(append([]string{"untag", in.taskID}, removes...), "--date", day)...))
+			}
+			if len(cmds) == 0 {
+				return m, nil
+			}
+			return m, tea.Batch(cmds...)
 		}
 		m.closeInput()
 		return m, nil
@@ -648,8 +672,9 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.input.acPrefix = m.input.value
 			}
 			m.input.value = m.cycleProject(m.input.acPrefix, m.input.value)
-		case "start":
-			// only the trailing "@token" is a project; the rest is the desc
+		case "start", "add":
+			// only the trailing "@token" is a project (the rest is the desc, plus
+			// an optional %time for start / !due for add) — same as the start prompt.
 			if at := strings.LastIndexByte(m.input.value, '@'); at >= 0 {
 				head, proj := m.input.value[:at+1], m.input.value[at+1:]
 				if m.input.acPrefix == "" {
@@ -657,6 +682,25 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				m.input.value = head + m.cycleProject(m.input.acPrefix, proj)
 			}
+		case "tags":
+			// complete the trailing space-delimited token (a leading "-" for
+			// removal or "#" is preserved) against the known tags.
+			head, last := m.input.value, ""
+			if sp := strings.LastIndexByte(m.input.value, ' '); sp >= 0 {
+				head, last = m.input.value[:sp+1], m.input.value[sp+1:]
+			} else {
+				head, last = "", m.input.value
+			}
+			neg := strings.HasPrefix(last, "-")
+			stem := strings.TrimPrefix(strings.TrimPrefix(last, "-"), "#")
+			if m.input.acPrefix == "" {
+				m.input.acPrefix = stem
+			}
+			comp := m.cycleTag(m.input.acPrefix, stem)
+			if neg {
+				comp = "-" + comp
+			}
+			m.input.value = head + comp
 		}
 		m.input.cursor = len([]rune(m.input.value)) // autocomplete lands the caret at the end
 		return m, nil
@@ -724,6 +768,46 @@ func (m Model) cycleProject(prefix, cur string) string {
 		}
 	}
 	return matches[0]
+}
+
+// tagMatches / cycleTag mirror the project autocomplete for the tag editor.
+func (m Model) tagMatches(prefix string) []string {
+	lc := strings.ToLower(prefix)
+	var out []string
+	for _, t := range m.tags {
+		if strings.HasPrefix(strings.ToLower(t), lc) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (m Model) cycleTag(prefix, cur string) string {
+	matches := m.tagMatches(prefix)
+	if len(matches) == 0 {
+		return cur
+	}
+	for i, t := range matches {
+		if t == cur {
+			return matches[(i+1)%len(matches)]
+		}
+	}
+	return matches[0]
+}
+
+// parseTagInput splits a tag-editor string into tags to add and tags to remove.
+// A leading "-" marks removal; the CLI normalises case and a leading "#".
+func parseTagInput(s string) (adds, removes []string) {
+	for _, tok := range strings.Fields(s) {
+		if strings.HasPrefix(tok, "-") {
+			if t := strings.TrimPrefix(tok, "-"); t != "" {
+				removes = append(removes, t)
+			}
+			continue
+		}
+		adds = append(adds, tok)
+	}
+	return adds, removes
 }
 
 // handleSearch drives the global search overlay: runes edit the query (which

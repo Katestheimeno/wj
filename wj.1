@@ -68,6 +68,17 @@ never rewrites history.
 .BI "move " "[id] proj"
 Re-home a task to another project (fix wrong auto-detection).
 .TP
+.BI "tag " "<id> <tag...>"
+Add one or more free-form labels to a task \(em a cross-cutting axis beside its
+project. Tags are normalized (lowercased; a leading '#' and spaces stripped, so
+"High Priority" becomes high-priority). They are matched by
+.B search
+and aggregated by
+.BR "report --by tag" .
+.TP
+.BI "untag " "<id> <tag...>"
+Remove one or more labels from a task.
+.TP
 .BI "cancel " [id]
 Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw
 log for audit).
@@ -200,7 +211,9 @@ Override project detection (e.g. for non-git work).
 Inclusive date range YYYY-MM-DD (report, export, gantt).
 .TP
 .BI "--by " KEY
-Grouping: project | task | day (report); project | task (gantt).
+Grouping: project | task | day | tag (report); project | task (gantt). With
+.BR "--by tag" ", a task is counted under each of its tags, so the report TOTAL"
+can exceed real tracked time.
 .TP
 .BI "--format " FMT
 export format: csv | json | tsv. Default csv.

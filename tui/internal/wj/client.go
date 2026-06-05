@@ -52,8 +52,14 @@ func (c Client) readJSON(v any, args ...string) error {
 }
 
 // Projects lists every distinct project name ever recorded (for autocomplete).
-func (c Client) Projects() ([]string, error) {
-	out, err := c.run("_projects")
+func (c Client) Projects() ([]string, error) { return c.lines("_projects") }
+
+// Tags lists every tag ever applied (for the tag-editor autocomplete).
+func (c Client) Tags() ([]string, error) { return c.lines("_tags") }
+
+// lines runs an internal list subcommand and returns its non-empty trimmed lines.
+func (c Client) lines(args ...string) ([]string, error) {
+	out, err := c.run(args...)
 	if err != nil {
 		return nil, err
 	}
