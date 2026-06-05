@@ -68,6 +68,44 @@ load test_helper
     [ "$output" = "12:00" ]
 }
 
+@test "normalize_time accepts spaces and case" {
+    run wj_fn normalize_time "4 PM"
+    [ "$output" = "16:00" ]
+}
+
+@test "normalize_time accepts dot with pm" {
+    run wj_fn normalize_time 4.30pm
+    [ "$output" = "16:30" ]
+}
+
+@test "normalize_time relative +0 yields a valid time" {
+    run wj_fn normalize_time +0
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^[0-2][0-9]:[0-5][0-9]$ ]]
+}
+
+@test "normalize_time relative offset is well-formed HH:MM" {
+    run wj_fn normalize_time -5
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^[0-2][0-9]:[0-5][0-9]$ ]]
+}
+
+@test "normalize_time relative +1h30m is well-formed HH:MM" {
+    run wj_fn normalize_time +1h30m
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^[0-2][0-9]:[0-5][0-9]$ ]]
+}
+
+@test "normalize_time rejects relative with trailing junk" {
+    run wj_fn normalize_time +5x
+    [ "$status" -ne 0 ]
+}
+
+@test "normalize_time rejects bare sign" {
+    run wj_fn normalize_time +
+    [ "$status" -ne 0 ]
+}
+
 @test "normalize_time rejects garbage" {
     run wj_fn normalize_time nope
     [ "$status" -ne 0 ]

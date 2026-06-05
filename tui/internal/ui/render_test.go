@@ -1764,6 +1764,59 @@ func TestTeammatePendingGating(t *testing.T) {
 	}
 }
 
+func TestVisiblePendingOrdersMineFirst(t *testing.T) {
+	m := pendingModel()
+	m.actor = "me"
+	m.pending = []wj.Pending{
+		{ID: "alex/P1", Actor: "alex", Desc: "a"},
+		{ID: "P1", Actor: "me", Desc: "mine-1"},
+		{ID: "sam/P1", Actor: "sam", Desc: "s"},
+		{ID: "P2", Actor: "me", Desc: "mine-2"},
+	}
+	// default (everyone): your own first (stable), teammates' below (stable)
+	got := m.visiblePending()
+	want := []string{"P1", "P2", "alex/P1", "sam/P1"}
+	for i, w := range want {
+		if got[i].ID != w {
+			t.Fatalf("order[%d] = %q, want %q (full: %v)", i, got[i].ID, w, ids(got))
+		}
+	}
+	// mineOnly hides teammates entirely
+	m.mineOnly = true
+	got = m.visiblePending()
+	if len(got) != 2 || got[0].ID != "P1" || got[1].ID != "P2" {
+		t.Fatalf("mineOnly pending = %v, want [P1 P2]", ids(got))
+	}
+	// solo (no actor) is untouched, original order preserved
+	m.mineOnly = false
+	m.actor = ""
+	if got := m.visiblePending(); len(got) != 4 || got[0].ID != "alex/P1" {
+		t.Errorf("solo should pass through unchanged, got %v", ids(got))
+	}
+}
+
+func ids(ps []wj.Pending) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = p.ID
+	}
+	return out
+}
+
+func TestFilteredTasksOrderMineFirst(t *testing.T) {
+	m := drilled()
+	m.actor = "me"
+	m.grid.Tasks = []wj.GridTask{
+		{ID: "alex/T1", Actor: "alex", Project: "ops", Status: "in-progress"},
+		{ID: "T1", Actor: "me", Project: "backend", Status: "in-progress"},
+		{ID: "T2", Actor: "me", Project: "docs", Status: "completed"},
+	}
+	got := m.filteredTasks()
+	if len(got) != 3 || got[0].ID != "T1" || got[1].ID != "T2" || got[2].ID != "alex/T1" {
+		t.Fatalf("tasks should be mine-first, got %v", []string{got[0].ID, got[1].ID, got[2].ID})
+	}
+}
+
 func TestFilteredTasksMineOnly(t *testing.T) {
 	m := drilled()
 	m.actor = "me"

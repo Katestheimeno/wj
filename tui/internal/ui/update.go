@@ -78,7 +78,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pendingMsg:
 		if msg.err == nil {
 			m.pending = msg.items
-			m.selPend = clamp(m.selPend, 0, len(m.pending)-1)
+			m.selPend = clamp(m.selPend, 0, len(m.visiblePending())-1)
 		}
 		return m, nil
 
@@ -295,13 +295,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showTeam = true
 		return m, m.loadTeam()
 	case "M":
-		// toggle the day's Tasks panel between everyone's tasks and just mine.
+		// toggle the Tasks AND Pending panels between everyone's and just mine.
 		m.mineOnly = !m.mineOnly
-		m.selTask = clamp(m.selTask, 0, len(m.filteredTasks())-1) // list may shrink
+		m.selTask = clamp(m.selTask, 0, len(m.filteredTasks())-1) // lists may shrink
+		m.selPend = clamp(m.selPend, 0, len(m.visiblePending())-1)
 		if m.mineOnly {
-			m.notice = "Tasks: mine only"
+			m.notice = "showing mine only (tasks + backlog)"
 		} else {
-			m.notice = "Tasks: everyone"
+			m.notice = "showing everyone (tasks + backlog)"
 		}
 		return m, m.loadShow(m.selectedTaskID(), m.currentDay()) // refresh the timeline
 	case "L":
@@ -346,7 +347,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // keyPending drives the backlog panel: navigate, promote (start), add, set due,
 // reorder, and drop. Add/due open the inline prompt; drop asks to confirm.
 func (m Model) keyPending(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	n := len(m.pending)
+	n := len(m.visiblePending()) // selPend indexes the visible (filtered/ordered) list
 	// you can only act on your own backlog items; a teammate's is read-only
 	// (claim it with `wj assign <id> me`). Nav and `a` (add yours) are unaffected.
 	if p, ok := m.selectedPending(); ok && !m.pendingOwned(p) {

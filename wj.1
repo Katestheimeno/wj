@@ -257,7 +257,8 @@ Show the built-in help.
 .TP
 .BI "--at " TIME
 Act at a past time instead of now. Flexible format: 9, 930, 0930, 9:30, 9.30,
-9am, 9pm, 9:30pm all normalise to HH:MM.
+9am, 9pm, 9:30pm (spaces and case are ignored, so "4 PM" and "4.30pm" work too)
+all normalise to HH:MM. Or a sign-led offset from now: -10m, -1h, +5, +1h30m.
 .TP
 .BI "--date " YYYY-MM-DD
 Act on another day (alias \fB--on\fR). Combine with \fB--at\fR to reconstruct a

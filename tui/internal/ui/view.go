@@ -206,9 +206,13 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	if d := m.currentDay(); d != "" {
 		taskTitle = "Tasks · " + shortDate(d)
 	}
+	vpend := m.visiblePending()
 	pendTitle := "Pending"
-	if n := len(m.pending); n > 0 {
+	if n := len(vpend); n > 0 {
 		pendTitle = fmt.Sprintf("Pending (%d)", n)
+		if m.mineOnly {
+			pendTitle += " · mine"
+		}
 	}
 	if !fill {
 		return lipgloss.JoinVertical(lipgloss.Left,
@@ -230,7 +234,7 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	hs := m.activeLayout().sidebarSplit(h, fi)
 	// auto-hide an empty backlog: collapse Pending to a slim title strip and give
 	// the reclaimed rows to Projects/Tasks (it stays focusable, so nav is intact).
-	if len(m.pending) == 0 {
+	if len(vpend) == 0 {
 		if slim := 3; hs[2] > slim {
 			extra := hs[2] - slim
 			hs[2] = slim
@@ -248,16 +252,20 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 // renderPending lists the backlog: a deadline-urgency glyph + the description
 // (project-colored when set), with the due date right-aligned.
 func (m Model) renderPending(cw, maxRows int, active bool) string {
-	if len(m.pending) == 0 {
+	pend := m.visiblePending() // your own first, teammates' below (or hidden when M)
+	if len(pend) == 0 {
 		// only surface the "press a to add" affordance when this panel is
 		// focused — a is a Pending-pane key, so the hint would mislead otherwise.
+		if m.mineOnly && len(m.pending) > 0 {
+			return dimStyle.Render("(none of yours — M shows everyone)")
+		}
 		if active {
 			return dimStyle.Render("(empty — press a to add)")
 		}
 		return dimStyle.Render("(empty)")
 	}
-	items := make([]string, len(m.pending))
-	for i, p := range m.pending {
+	items := make([]string, len(pend))
+	for i, p := range pend {
 		glyph, gc, due := m.dueBadge(p.Due)
 		// a teammate's item shows its owner inline (the id is already qualified,
 		// e.g. alice/P2) so a shared backlog reads clearly.
@@ -285,10 +293,11 @@ func (m Model) renderPending(cw, maxRows int, active bool) string {
 // counterpart of the Timeline, shown in the main column while the Pending pane has
 // focus, so a long description stays fully readable despite the narrow list.
 func (m Model) renderPendingDetail(innerW, maxBody int) string {
-	if m.selPend < 0 || m.selPend >= len(m.pending) {
+	pend := m.visiblePending()
+	if m.selPend < 0 || m.selPend >= len(pend) {
 		return dimStyle.Render("(no pending task selected)")
 	}
-	p := m.pending[m.selPend]
+	p := pend[m.selPend]
 	var lines []string
 	head := lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Bold(true).Render(p.ID)
 	if p.Project != "" {
@@ -415,8 +424,11 @@ func (m Model) renderZoom(w, h int, fill bool) string {
 		return panel("Day — "+m.currentDay(), colorDay, m.renderDay(innerW, body), true, w, ph)
 	case panePending:
 		title := "Pending"
-		if n := len(m.pending); n > 0 {
+		if n := len(m.visiblePending()); n > 0 {
 			title = fmt.Sprintf("Pending (%d)", n)
+			if m.mineOnly {
+				title += " · mine"
+			}
 		}
 		return panel(title, colorPending, m.renderPending(innerW, body, true), true, w, ph)
 	default: // timeline
@@ -697,7 +709,7 @@ func (m Model) helpOverlay() string {
 		{"~View", ""},
 		{"/", "search all tasks (id / project / description / tags); Enter jumps"},
 		{"b", "cycle the Range rows: project → task → person"},
-		{"M", "Tasks panel: toggle mine-only vs everyone (shared journal)"},
+		{"M", "Tasks + Pending: toggle mine-only vs everyone (shared journal)"},
 		{"", "selecting a project filters the day's Tasks"},
 		{"", "selecting a Today-section project also jumps to today"},
 		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden"},

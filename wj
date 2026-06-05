@@ -202,10 +202,27 @@ hm_to_min() {
 min_to_hm() { printf '%02d:%02d' "$(( $1 / 60 ))" "$(( $1 % 60 ))"; }
 
 # normalise a loose time string to canonical HH:MM on stdout; non-zero on failure.
-# accepts: 9  09  930  0930  9:30  9.30  9am  9pm  9:30pm  12am  12pm
+# accepts (absolute):  9  09  930  0930  9:30  9.30  9am  9pm  9:30pm  12am  12pm
+#         spaces and case are ignored, so "9 PM" and "4.30pm" work too.
+# accepts (relative to now, must lead with a sign): -10m  -1h  +5  +1h30m
+#         a bare number after the sign means minutes (+5 == +5m). minutes is
+#         the unit; h is hours. relative results must land in the same day.
 normalize_time() {
     local raw h m ap=""
     raw=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    # relative offset against the current wall-clock time
+    if [[ $raw == [+-]* ]]; then
+        local sign=${raw:0:1} body=${raw:1} off now_m
+        if   [[ $body =~ ^([0-9]+)h([0-9]+)m?$ ]]; then off=$(( ${BASH_REMATCH[1]} * 60 + ${BASH_REMATCH[2]} ))
+        elif [[ $body =~ ^([0-9]+)h$ ]];           then off=$(( ${BASH_REMATCH[1]} * 60 ))
+        elif [[ $body =~ ^([0-9]+)m?$ ]];          then off=${BASH_REMATCH[1]}
+        else return 1; fi
+        [[ $sign == - ]] && off=$(( -off ))
+        now_m=$(( 10#$(date +%H) * 60 + 10#$(date +%M) + off ))
+        (( now_m >= 0 && now_m < 1440 )) || return 1   # don't silently cross midnight
+        min_to_hm "$now_m"
+        return
+    fi
     case $raw in
         *am) ap=am; raw=${raw%am} ;;
         *pm) ap=pm; raw=${raw%pm} ;;
@@ -395,13 +412,20 @@ pending_migrate() {
 
 # every backlog item across all authors, id qualified actor/P# (legacy pending.tsv
 # -> the current actor). Emits: qualified-id <tab> created <tab> proj <tab> due <tab> desc
+# Your own items come first (legacy + your actor file), then teammates' in glob
+# order — so you read/act on your backlog without scrolling past everyone else's.
 pending_stream() {
     [[ -d $WJ_DATA_DIR ]] || return 0
-    local f fn a
-    for f in "$WJ_DATA_DIR/pending.tsv" "$WJ_DATA_DIR/pending."*.tsv; do
-        [[ -f $f ]] || continue
+    local f fn a me mine; me=$(cur_actor); mine="$WJ_DATA_DIR/pending.$me.tsv"
+    local -a files=()
+    [[ -f "$WJ_DATA_DIR/pending.tsv" ]] && files+=("$WJ_DATA_DIR/pending.tsv")  # legacy = yours
+    [[ -f $mine ]] && files+=("$mine")
+    for f in "$WJ_DATA_DIR/pending."*.tsv; do
+        [[ -f $f && $f != "$mine" ]] && files+=("$f")   # teammates' (own already added)
+    done
+    for f in "${files[@]}"; do
         fn=${f##*/}
-        if [[ $fn == pending.tsv ]]; then a=$(cur_actor); else a=${fn#pending.}; a=${a%.tsv}; fi
+        if [[ $fn == pending.tsv ]]; then a=$me; else a=${fn#pending.}; a=${a%.tsv}; fi
         awk -v a="$a" -F'\t' 'BEGIN{OFS="\t"} NF>=1{$1=a"/"$1} {print}' "$f"
     done
 }
@@ -709,7 +733,7 @@ parse_args() {
     done
     if [[ -n $AT ]]; then
         local norm
-        norm=$(normalize_time "$AT") || die "--at: cannot parse '$AT' (examples: 9, 930, 9:30, 9pm, 9.30)"
+        norm=$(normalize_time "$AT") || die "--at: cannot parse '$AT' (examples: 9, 930, 9:30, 9pm, 9.30, -10m, +5)"
         AT=$norm
     fi
     [[ -z $ON ]] || valid_date "$ON" || die "--date must be a real date YYYY-MM-DD (got '$ON')"
@@ -2114,8 +2138,10 @@ OTHER
 
 FLAGS
   --at TIME           Act at a past time instead of now. Flexible format: 9, 930,
-                      0930, 9:30, 9.30, 9am, 9pm, 9:30pm all normalise to HH:MM.
-                      Backfills the grid; chain across commands to rebuild a day.
+                      0930, 9:30, 9.30, 9am, 9pm, 9:30pm (spaces/case ignored, so
+                      "4 PM" and "4.30pm" work) all normalise to HH:MM. Or a sign-led
+                      offset from now: -10m, -1h, +5, +1h30m. Backfills the grid;
+                      chain across commands to rebuild a day.
   --date YYYY-MM-DD   Act on another day, not today (alias: --on). Combine with --at
                       to reconstruct any past day; defaults the day for status/grid.
                       On a past day WITHOUT --at, the time is inferred from that day's

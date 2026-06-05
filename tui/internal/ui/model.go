@@ -8,9 +8,11 @@
 package ui
 
 import (
+	"sort"
+	"time"
+
 	"github.com/Katestheimeno/wj/tui/internal/wj"
 	tea "github.com/charmbracelet/bubbletea"
-	"time"
 )
 
 const (
@@ -474,9 +476,10 @@ func (m Model) filteredTasks() []wj.GridTask {
 		return nil
 	}
 	f := m.projectFilter()
+	solo := m.actor == "" // solo / pre-collab: no owners to filter or reorder
 	// mineOnly hides teammates' tasks (toggle: M); a non-shared log is unaffected.
-	mineOnly := m.mineOnly && m.actor != ""
-	if f == "" && !mineOnly {
+	mineOnly := m.mineOnly && !solo
+	if solo && f == "" {
 		return m.grid.Tasks
 	}
 	out := make([]wj.GridTask, 0, len(m.grid.Tasks))
@@ -488,6 +491,11 @@ func (m Model) filteredTasks() []wj.GridTask {
 			continue
 		}
 		out = append(out, t)
+	}
+	if !solo { // your own tasks first, teammates' below (stable within each group)
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].Actor == m.actor && out[j].Actor != m.actor
+		})
 	}
 	return out
 }
@@ -517,20 +525,43 @@ func (m Model) taskOwned(t wj.GridTask) bool {
 	return t.Actor == "" || m.actor == "" || t.Actor == m.actor
 }
 
+// visiblePending is the backlog as shown in the panel: your own items first,
+// teammates' below (stable within each group), with teammates hidden entirely
+// when mineOnly (M) is on. selPend indexes THIS list, so every reader/navigator
+// must go through it. A solo / pre-collab log is returned untouched.
+func (m Model) visiblePending() []wj.Pending {
+	if m.actor == "" {
+		return m.pending
+	}
+	out := make([]wj.Pending, 0, len(m.pending))
+	for _, p := range m.pending {
+		if m.mineOnly && p.Actor != m.actor {
+			continue
+		}
+		out = append(out, p)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Actor == m.actor && out[j].Actor != m.actor
+	})
+	return out
+}
+
 // selectedPendID is the id of the highlighted pending task ("" if none).
 func (m Model) selectedPendID() string {
-	if m.selPend < 0 || m.selPend >= len(m.pending) {
+	vp := m.visiblePending()
+	if m.selPend < 0 || m.selPend >= len(vp) {
 		return ""
 	}
-	return m.pending[m.selPend].ID
+	return vp[m.selPend].ID
 }
 
 // selectedPending returns the highlighted backlog item (ok=false if none).
 func (m Model) selectedPending() (wj.Pending, bool) {
-	if m.selPend < 0 || m.selPend >= len(m.pending) {
+	vp := m.visiblePending()
+	if m.selPend < 0 || m.selPend >= len(vp) {
 		return wj.Pending{}, false
 	}
-	return m.pending[m.selPend], true
+	return vp[m.selPend], true
 }
 
 // pendingOwned reports whether a backlog item is yours to act on (empty actor =

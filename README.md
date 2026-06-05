@@ -188,7 +188,7 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 
 | Flag | Applies to | Purpose |
 |---|---|---|
-| `--at TIME` | start, pause, resume, complete, defer, log, amend, move, cancel, status, grid, show | Act at a past time instead of now. Flexible format — `9`, `930`, `0930`, `9:30`, `9.30`, `9am`, `9pm`, `9:30pm` all normalise to `HH:MM`. Backfills the grid. |
+| `--at TIME` | start, pause, resume, complete, defer, log, amend, move, cancel, status, grid, show | Act at a past time instead of now. Flexible format — `9`, `930`, `0930`, `9:30`, `9.30`, `9am`, `9pm`, `9:30pm` (spaces and case are ignored, so `4 PM` and `4.30pm` work too) all normalise to `HH:MM`. Or give a sign-led offset from now: `-10m`, `-1h`, `+5`, `+1h30m`. Backfills the grid. |
 | `--date YYYY-MM-DD` | any write command + status, grid, ls, show | Act on another day, not today (alias `--on`). Combine with `--at` to reconstruct any past day. On a past day **without** `--at`, the time is inferred from that day's last event (or `shift_start`) and the inference is printed. |
 | `--project NAME` | start (where the task lives); pause/complete/defer/log/resume/amend/cancel (scope) | Override project detection. Quote names with spaces. |
 | `--from D --to D` | report, export, gantt | Inclusive date range `YYYY-MM-DD`. For `gantt`, `--to` (or `--date`/`--on`) is the range end and `--from` the start; if `--from` is omitted it defaults to 6 days before `--to` (last 7 days). For `report`/`export`, default is today. |
