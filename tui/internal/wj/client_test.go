@@ -151,3 +151,43 @@ func TestClientMutate(t *testing.T) {
 		t.Error("completing a nonexistent task should error")
 	}
 }
+
+// TestPendingNoDueRoundTrip guards against a TSV column-shift regression: a
+// backlog item with no due date (an empty middle column) must not bleed the
+// description into the project/due fields when read back through the JSON.
+func TestPendingNoDueRoundTrip(t *testing.T) {
+	wjBin := repoWJ(t)
+	if wjBin == "" {
+		t.Skip("wj script not found relative to module; skipping integration test")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("WJ_DATA_DIR", t.TempDir())
+	t.Setenv("WJ_CONFIG", filepath.Join(t.TempDir(), "config"))
+	cli := Client{Bin: wjBin}
+
+	if _, err := cli.Mutate("add", "fix the invoice bug", "--project", "acme"); err != nil {
+		t.Fatalf("add (no due): %v", err)
+	}
+	if _, err := cli.Mutate("add", "call the client"); err != nil { // no project, no due
+		t.Fatalf("add (bare): %v", err)
+	}
+	items, err := cli.Pending()
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 backlog items, got %d: %+v", len(items), items)
+	}
+	byDesc := map[string]Pending{}
+	for _, it := range items {
+		byDesc[it.Desc] = it
+	}
+	if it, ok := byDesc["fix the invoice bug"]; !ok || it.Project != "acme" || it.Due != "" {
+		t.Errorf("no-due item shifted columns: %+v", it)
+	}
+	if it, ok := byDesc["call the client"]; !ok || it.Project != "" || it.Due != "" {
+		t.Errorf("bare item (no project/due) shifted columns: %+v", it)
+	}
+}

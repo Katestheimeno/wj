@@ -751,6 +751,18 @@ cur_project() {
     if [[ -n $PROJECT_OVERRIDE ]]; then printf '%s' "$PROJECT_OVERRIDE"; else detect_project; fi
 }
 
+# normalize a handle to the filename/id-safe actor charset: lowercase, any
+# non-[a-z0-9-] -> '-', squeeze and trim hyphens. Used both to derive your own
+# actor and to resolve an `assign <P#> <who>` target, so the two always agree
+# (e.g. "John.Doe" -> "john-doe" on both sides).
+norm_actor() {
+    local a=${1,,}
+    a=${a//[^a-z0-9-]/-}
+    while [[ $a == *--* ]]; do a=${a//--/-}; done
+    a=${a#-}; a=${a%-}
+    printf '%s' "$a"
+}
+
 # cur_actor is the author handle for collaborative logs: the configured `actor`,
 # else the local-part of git user.email, else $USER, else "me". Normalized to
 # a-z0-9- (so it's safe as a filename suffix and an id qualifier). Memoized.
@@ -761,10 +773,7 @@ cur_actor() {
     [[ -n $a ]] || a=$(git config user.email 2>/dev/null || true)
     [[ -n $a ]] || a=${USER:-}
     a=${a%@*}                                  # email local-part, if any
-    a=${a,,}
-    a=${a//[^a-z0-9-]/-}                        # filename/id-safe
-    while [[ $a == *--* ]]; do a=${a//--/-}; done
-    a=${a#-}; a=${a%-}
+    a=$(norm_actor "$a")
     [[ -n $a ]] || a=me
     _ACTOR=$a
     printf '%s' "$a"
@@ -1664,10 +1673,11 @@ pending_get() {
     return 1
 }
 
-# remove the entry with id $1; return 1 if not found
+# remove the entry with id $1 (from file $2, default your own); return 1 if absent
 pending_remove() {
-    local want=$1 f tmp found=1 line id
-    f=$(pending_file); [[ -f $f ]] || return 1
+    local want=$1 f=${2:-} tmp found=1 line id
+    [[ -n $f ]] || f=$(pending_file)
+    [[ -f $f ]] || return 1
     tmp=$(mktemp "$f.XXXXXX") # same dir as $f so the mv is an atomic rename
     while IFS= read -r line || [[ -n $line ]]; do
         id=${line%%$'\t'*}
@@ -1726,10 +1736,14 @@ cmd_add() {
 }
 
 cmd_pending() {
-    local qid created proj due desc first=1 found=0 me; me=$(cur_actor)
+    # NB: read each line with tsv_split (not `read -r a b c` under IFS=$'\t'),
+    # which would merge consecutive tabs and drop an empty project/due column.
+    local line qid created proj due desc first=1 found=0 me; me=$(cur_actor)
     if (( JSON )); then
         printf '['
-        while IFS=$'\t' read -r qid created proj due desc; do
+        while IFS= read -r line; do
+            [[ -n $line ]] || continue
+            tsv_split "$line"; qid=${PF[0]:-}; created=${PF[1]:-}; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
             [[ -n $qid ]] || continue
             (( MINE )) && [[ $(pid_actor "$qid") != "$me" ]] && continue
             (( first )) && first=0 || printf ','
@@ -1741,7 +1755,9 @@ cmd_pending() {
         return
     fi
     printf '\nPending%s\n\n' "$( (( MINE )) && printf ' (mine)')"
-    while IFS=$'\t' read -r qid created proj due desc; do
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        tsv_split "$line"; qid=${PF[0]:-}; created=${PF[1]:-}; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
         [[ -n $qid ]] || continue
         (( MINE )) && [[ $(pid_actor "$qid") != "$me" ]] && continue
         found=1
@@ -1787,28 +1803,38 @@ cmd_lower() {
     pending_move "$(disp_pid "$id")" down || die "no such pending task: $id"
 }
 
-# move a backlog item to another author (they then own it). Append-only on the
-# assignee's file + remove from yours, so it survives a git sync cleanly.
+# move a backlog item to another author (they then own it). You may push your
+# OWN item to someone, or claim a teammate's item for yourself (wj assign
+# alice/P1 me). Append to the assignee's file FIRST, then remove from the
+# owner's — so a crash in between duplicates (recoverable) rather than loses it;
+# both are append-only writes that survive a git sync.
 cmd_assign() {
-    local id=${ARGS[0]:-} who=${ARGS[1]:-} f line found="" created proj due desc tf nid me
-    [[ $id =~ ^P[0-9]+$ ]] || die "assign your own pending id (e.g. wj assign P2 bob)"
+    local id=${ARGS[0]:-} who=${ARGS[1]:-} f bid line found="" created proj due desc tf nid me owner
+    [[ $id =~ ^([a-z0-9-]+/)?P[0-9]+$ ]] || die "assign needs a pending id (e.g. wj assign P2 bob)"
     [[ -n $who ]] || die "assign needs a person (e.g. wj assign $id bob)"
-    who=$(normalize_tag "$who")            # actor handles use the same charset as tags
+    me=$(cur_actor)
+    [[ $who == me ]] && who=$me            # the literal 'me' means yourself
+    who=$(norm_actor "$who")              # same normalization cur_actor uses, so files agree
     [[ -n $who ]] || die "assign needs a valid person"
     pending_migrate
-    me=$(cur_actor)
-    [[ $who == "$me" ]] && { printf '%s  already yours\n' "$id"; return 0; }
-    f=$(pending_file); [[ -f $f ]] || die "no such pending task: $id"
+    owner=$(pid_actor "$id")
+    # you can only move your own item out, or pull a teammate's item to yourself
+    [[ $owner == "$me" || $who == "$me" ]] || \
+        die "assign moves your own item to someone, or claims a teammate's to you (wj assign $id me)"
+    # the only reachable same-owner case is your own item assigned to yourself
+    [[ $who == "$owner" ]] && { printf '%s  already yours\n' "$(disp_pid "$id")"; return 0; }
+    f=$(pending_owner_file "$id"); bid=${id##*/}   # bare P# as stored in the owner's file
+    [[ -f $f ]] || die "no such pending task: $id"
     while IFS= read -r line || [[ -n $line ]]; do
-        [[ ${line%%$'\t'*} == "$id" ]] && { found=$line; break; }
+        [[ ${line%%$'\t'*} == "$bid" ]] && { found=$line; break; }
     done <"$f"
     [[ -n $found ]] || die "no such pending task: $id"
     tsv_split "$found"; created=${PF[1]:-}; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
-    pending_remove "$id"
-    tf="$WJ_DATA_DIR/pending.$who.tsv"
+    tf="$WJ_DATA_DIR/pending.$who.tsv"; mkdir -p "$(dirname "$tf")"
     nid="P$(( $(pending_max_id "$tf") + 1 ))"
     printf '%s\t%s\t%s\t%s\t%s\n' "$nid" "$created" "$proj" "$due" "$desc" >>"$tf"
-    printf '%s  assigned to %s (now %s/%s)\n' "$id" "$who" "$who" "$nid"
+    pending_remove "$bid" "$f"
+    printf '%s  assigned to %s (now %s/%s)\n' "$(disp_pid "$id")" "$who" "$who" "$nid"
 }
 
 # search every recorded task (all-time) by a case-insensitive substring,
@@ -1870,10 +1896,15 @@ cmd_export() {
         json) printf '[' ;;
         *)    die "--format must be csv|json|tsv" ;;
     esac
-    local first=1 ts id proj evt note
+    local first=1 line ts id proj evt note
     while read -r d; do
-        while IFS=$'\t' read -r ts id proj evt note; do
+        # tsv_split (not `read -r a b c` under IFS=$'\t') so an empty project
+        # column can't merge the note into the wrong field.
+        while IFS= read -r line; do
+            [[ -n $line ]] || continue
+            tsv_split "$line"; ts=${PF[0]:-}; id=${PF[1]:-}; proj=${PF[2]:-}; evt=${PF[3]:-}; note=${PF[4]:-}
             [[ -n $ts ]] || continue
+            id=$(disp_id "$id")   # own events stay bare T#; teammates' read actor/T#
             case $FORMAT in
                 tsv)  printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$id" "$proj" "$evt" "$note" ;;
                 csv)  printf '%s,%s,%s,%s,%s\n' \
@@ -2031,8 +2062,8 @@ PENDING (BACKLOG)
   drop <P#>           Remove a pending task without starting it.
                       (Use `start P#` to promote one into a tracked task.)
   assign <P#> <who>   Hand a backlog item to a teammate (it moves to their list,
-                      becoming who/P#). You act on your own items; assign one to
-                      yourself to pick it up. (Shared-journal only.)
+                      becoming who/P#). Push your own, or claim a teammate's with
+                      `assign alice/P1 me`. (Shared-journal only.)
 
 SYNC (SHARED / COLLABORATIVE JOURNAL)
   sync init <url>     Make the data dir a git repo, install the union merge rule,
@@ -2060,13 +2091,14 @@ VIEW & ANALYSIS
   gantt  [flags]      Multi-day overview: rows (--by project|task|person) x days.
                       Default range: last 7 days through --to. The headline UI view.
                       --by task lists each day's tasks separately (ids are per-day).
-  search <query>      Find tasks (all-time) by id / project / description substring.
-                      Scans every recorded day; most-recent first. --json for the UI.
+  search <query>      Find tasks (all-time) by id / project / description / tag
+                      substring. Scans every recorded day (every author's, in a
+                      shared log); most-recent first. --json for the UI.
   report [flags]      Aggregate time across a date range, grouped by --by.
   export [flags]      Dump raw events as csv / json / tsv over a date range.
 
-  Read views (status, show, grid, gantt, search, pending) also accept --json for a
-  stable machine-readable contract — this is what the `ui` front-end consumes.
+  Read views (status, show, grid, gantt, search, pending, team) also accept --json
+  for a stable machine-readable contract — this is what the `ui` front-end consumes.
 
 OTHER
   ui                  Launch the wj-tui front-end (requires the wj-tui binary).
@@ -2125,6 +2157,8 @@ CONFIG  (~/.config/wj/cfg — INI [sections], created on first run)
   round                     grid snapping: down | nearest             (down)
   totals                    time summing: exact | slot               (exact)
   default_project           project used outside a git repo          (admin)
+  actor                     shared-journal author handle; empty =
+                            git user.email / $USER, normalized       ()
   interface                 bare-wj front-end: minimal | ui          (minimal)
   auto_pause                start/resume auto-pause same project     (off)
   accent                    wj-tui focused-panel border color        (141)
@@ -2176,6 +2210,7 @@ EXAMPLES
 FILES
   config :  ~/.config/wj/cfg             (override: $WJ_CONFIG)
   data   :  ~/.local/share/wj/YYYY/MM/DD.tsv   (override: $WJ_DATA_DIR)
+            (shared journal: per-author DD.<actor>.tsv, unioned on read)
 EOF
 }
 

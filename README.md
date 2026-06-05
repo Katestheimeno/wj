@@ -50,8 +50,9 @@ Total tracked: 1h15m
   shape of your day. Comment out the shift bounds for a full 24h / auto-fit grid.
 - **Multi-day overview** — `wj gantt` prints a projects(or tasks)×days matrix of
   time totals right in the terminal (the CLI counterpart of the TUI's Range view).
-- **Machine-readable** — `status`, `show`, `grid` and `gantt` accept `--json` for a
-  stable contract that tooling (and the `wj-tui` front-end) can consume.
+- **Machine-readable** — `status`, `show`, `grid`, `gantt`, `search`, `pending` and
+  `team` accept `--json` for a stable contract that tooling (and the `wj-tui`
+  front-end) can consume.
 - **Retroactive** — `--at HH:MM` backfills past times; chain it to reconstruct a
   whole day after the fact.
 - **Exportable** — dump the raw event log to `csv`, `json`, or `tsv`, or roll it
@@ -191,12 +192,12 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `--date YYYY-MM-DD` | any write command + status, grid, ls, show | Act on another day, not today (alias `--on`). Combine with `--at` to reconstruct any past day. On a past day **without** `--at`, the time is inferred from that day's last event (or `shift_start`) and the inference is printed. |
 | `--project NAME` | start (where the task lives); pause/complete/defer/log/resume/amend/cancel (scope) | Override project detection. Quote names with spaces. |
 | `--from D --to D` | report, export, gantt | Inclusive date range `YYYY-MM-DD`. For `gantt`, `--to` (or `--date`/`--on`) is the range end and `--from` the start; if `--from` is omitted it defaults to 6 days before `--to` (last 7 days). For `report`/`export`, default is today. |
-| `--by KEY` | report, gantt | Group rows. `report`: `project` \| `task` \| `day` \| `tag`. `gantt`: `project` \| `task`. Default: `project`. (`--by tag` fans a task out across each of its tags, so the report TOTAL can exceed real tracked time.) |
+| `--by KEY` | report, gantt | Group rows. `report`: `project` \| `task` \| `day` \| `tag` \| `person`. `gantt`: `project` \| `task` \| `person`. Default: `project`. (`--by tag` fans a task out across each of its tags, so the report TOTAL can exceed real tracked time; `--by person` groups by author in a shared journal.) |
 | `--format FMT` | export | `csv` \| `json` \| `tsv`. Default: `csv`. |
 | `--days N` | ls | How many days back to scan for open tasks. Default: `1` (today). |
 | `--due YYYY-MM-DD` | add | Optional deadline for a pending task. |
 | `--parallel` / `--auto-pause` | start, resume | Override the `auto_pause` config for one command. `--parallel` leaves any other running task in the same project running; `--auto-pause` pauses it first (one in-progress task per project). |
-| `--json` | status, show, grid, gantt, search, pending | Emit machine-readable JSON instead of the text table — a stable contract (this is what the `wj-tui` front-end consumes). |
+| `--json` | status, show, grid, gantt, search, pending, team | Emit machine-readable JSON instead of the text table — a stable contract (this is what the `wj-tui` front-end consumes). |
 
 If you omit `--project` on `pause`/`complete`/`log`/`amend`/`move`/`cancel`, the
 command acts on whatever is currently running. Pass `--project` to scope it to one
@@ -226,8 +227,9 @@ you start one, at which point it becomes a normal tracked task.
 
 In a [shared journal](#collaboration-shared-journal) the backlog is also
 author-partitioned: `wj pending` shows everyone's (yours as `P#`, teammates' as
-`alice/P#`), `wj pending --mine` filters to yours, and you act on your own items —
-`assign` one to yourself to pick it up.
+`alice/P#`), `wj pending --mine` filters to yours, and you act on your own items.
+`wj assign <P#> <who>` hands one of yours to a teammate, and `wj assign alice/P1 me`
+claims a teammate's item for yourself.
 
 **Shell completion** completes commands, flags, task ids, project names, and tags.
 
@@ -300,6 +302,7 @@ version is migrated to `cfg` automatically on first run (the original is kept as
 | `round` | `down` | Grid snapping of event times: `down` or `nearest`. |
 | `totals` | `exact` | Time summing: `exact` minutes or `slot`-rounded. |
 | `default_project` | `admin` | Project used outside a git repo when no `--project` is given. |
+| `actor` | _(empty)_ | Author handle stamped on your events in a [shared journal](#collaboration-shared-journal). Empty derives it from your git `user.email` local-part, then `$USER`; normalized to `a-z0-9-`. Pin it (e.g. `actor = alice`) so your id is stable across machines. |
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 | `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
 | `accent` | `141` | `wj-tui`'s border/header color — the focused panel's border. A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
@@ -307,6 +310,7 @@ version is migrated to `cfg` automatically on first run (the original is kept as
 | `sidebar` | `left` | Which side the `wj-tui` lists column sits on: `left` or `right`. |
 | `confirm` | `destructive` | `wj-tui`'s y/n guard before an action: `all` (every action confirms), `destructive` (only `cancel`/void and pending `drop`), or `off` (none — `u` undo is the safety net). |
 | `icons` | `off` | `wj-tui`'s status markers and indicators (the `>`/`=`/`»`/`x` task glyphs, the running-task marker, pause-mode badge, now-marker, scroll/`more` arrows, etc.). `off` keeps everything in a universal ASCII set that renders in any font; `on` uses Nerd-Font icons (needs a [patched font](https://www.nerdfonts.com)). A terminal app can't detect a font's glyphs, so this is an explicit opt-in rather than auto-detection. |
+| `auto_sync` | `5` | `wj-tui`'s background git-sync interval, in **minutes**: how often it runs `wj sync` (pull + push) to share/receive a [shared journal](#collaboration-shared-journal). `0` (or `off`) disables it, leaving the manual `S` key. Only acts once the data dir is a sync repo (`wj sync init`). |
 | `layout_sidebar` / `layout_split` | — | Define a `custom` layout: `layout_sidebar` is the sidebar width percent (e.g. `28`); `layout_split` is the panel weights `focused,hi,lo` (e.g. `60,25,15` — the focused panel gets 60% of its column, the other two split the rest 25:15). Select with `layout=custom`. |
 | `color_projects` / `color_tasks` / `color_pending` / `color_range` / `color_day` / `color_timeline` | `39` / `214` / `170` / `78` / `45` / `180` | `wj-tui`'s per-panel title colors — each panel keeps its own so they stay visually distinct. Same value formats as `accent`. |
 
@@ -322,7 +326,10 @@ Environment overrides:
 ```
 ~/.config/wj/cfg                     # settings (INI: [tracking] [ui] [colors])
 ~/.local/share/wj/
-└── 2026/06/01.tsv                    # one append-only event log per day
+├── 2026/06/01.tsv                    # one append-only event log per day
+│                                     #   (in a shared journal: 01.<actor>.tsv,
+│                                     #    one per author; reads union them all)
+└── pending.tsv                       # the backlog (pending.<actor>.tsv when shared)
 ```
 
 Project detection order: git remote basename → repo folder name → `default_project`

@@ -171,28 +171,54 @@ seed_data() {
     "$WJ" lower P1 >/dev/null
     "$WJ" due   P3 "$(date -d "$today +1 day" +%Y-%m-%d)" >/dev/null   # …and nudge a deadline
 
-    # --- a teammate's work (a second author) so the collaborative/union views
-    # have multiple people. Written under actor=<mate> into the SAME data dir;
-    # reads union both. Skip with WJDEV_NO_MATE=1; rename with WJDEV_MATE=name.
+    # --- teammates' work (other authors) so the collaborative/union views have
+    # multiple people: `wj team` (and the TUI `w` overlay) shows a running row
+    # (alex) and an idle row (sam), `gantt --by person` rolls up three authors,
+    # and the shared backlog carries items to assign. Each is written under its
+    # own actor into the SAME data dir via a temp config; reads union them all.
+    # Skip with WJDEV_NO_MATE=1; pin a single primary with WJDEV_MATE=name.
     if [[ -z "${WJDEV_NO_MATE:-}" ]]; then
-        local mate mate_cfg yd
+        local mate mate_cfg yd cfg2
+        yd=$(date -d "$today -1 day" +%Y-%m-%d)
+        # a temp config that runs wj as actor $1; prints its path (caller removes)
+        mate_cfg_for() {
+            local cfg; cfg=$(mktemp)
+            cp "$WJ_CONFIG" "$cfg" 2>/dev/null || "$WJ" config >/dev/null
+            printf '\nactor = %s\n' "$1" >> "$cfg"; printf '%s' "$cfg"
+        }
+
+        # teammate #1 — busy now (a task left running today drives the team view)
         mate=${WJDEV_MATE:-alex}
-        mate_cfg=$(mktemp)
-        cp "$WJ_CONFIG" "$mate_cfg" 2>/dev/null || "$WJ" config >/dev/null
-        printf '\nactor = %s\n' "$mate" >> "$mate_cfg"
+        mate_cfg=$(mate_cfg_for "$mate")
         WJ_CONFIG=$mate_cfg "$WJ" start "review the caching RFC"  --project docs    --at "$(ago 245)" >/dev/null
         WJ_CONFIG=$mate_cfg "$WJ" complete T1                                        --at "$(ago 185)" >/dev/null
         WJ_CONFIG=$mate_cfg "$WJ" start "pair on the db migration" --project backend --at "$(ago 150)" >/dev/null
         WJ_CONFIG=$mate_cfg "$WJ" tag   T2 migration                                 --at "$(ago 145)" >/dev/null
         WJ_CONFIG=$mate_cfg "$WJ" pause T2 "lunch"                                   --at "$(ago 60)"  >/dev/null
         WJ_CONFIG=$mate_cfg "$WJ" start "on-call triage"          --project ops      --at "$(ago 40)"  >/dev/null
-        yd=$(date -d "$today -1 day" +%Y-%m-%d)
         WJ_CONFIG=$mate_cfg "$WJ" start "incident write-up" --project ops --date "$yd" --at 14:00 >/dev/null
         WJ_CONFIG=$mate_cfg "$WJ" complete T1                                --date "$yd" --at 15:30 >/dev/null
-        # a teammate backlog item, to exercise the shared backlog / assign / gating
-        WJ_CONFIG=$mate_cfg "$WJ" add "draft the Q3 roadmap" --project meetings >/dev/null 2>&1 || true
+        WJ_CONFIG=$mate_cfg "$WJ" add "draft the Q3 roadmap" --project meetings --due "$(date -d "$today +4 days" +%Y-%m-%d)" >/dev/null 2>&1 || true
         rm -f "$mate_cfg"
-        note "seeded $processed past days + a live today + 5 pending + teammate '$mate' in $WJ_DATA_DIR"
+
+        # teammate #2 — idle now (worked earlier, nothing running), so the team
+        # overlay shows both states. Only when not pinned to a single mate.
+        if [[ -z "${WJDEV_MATE:-}" ]]; then
+            cfg2=$(mate_cfg_for sam)
+            WJ_CONFIG=$cfg2 "$WJ" start "triage the bug board"  --project support  --at "$(ago 300)" >/dev/null
+            WJ_CONFIG=$cfg2 "$WJ" complete T1                                       --at "$(ago 250)" >/dev/null
+            WJ_CONFIG=$cfg2 "$WJ" start "update the API client" --project backend   --at "$(ago 240)" >/dev/null
+            WJ_CONFIG=$cfg2 "$WJ" defer T2 "blocked on review"                      --at "$(ago 120)" >/dev/null
+            WJ_CONFIG=$cfg2 "$WJ" start "design-sync notes"     --project meetings --date "$yd" --at 11:00 >/dev/null
+            WJ_CONFIG=$cfg2 "$WJ" complete T1                                       --date "$yd" --at 12:00 >/dev/null
+            # one backlog item with NO due date (exercises the empty-column path)
+            WJ_CONFIG=$cfg2 "$WJ" add "groom the backlog"  --project meetings >/dev/null 2>&1 || true
+            WJ_CONFIG=$cfg2 "$WJ" add "renew the TLS certs" --project ops --due "$(date -d "$today +6 days" +%Y-%m-%d)" >/dev/null 2>&1 || true
+            rm -f "$cfg2"
+            note "seeded $processed past days + a live today + 5 pending + teammates '$mate' & 'sam' in $WJ_DATA_DIR"
+        else
+            note "seeded $processed past days + a live today + 5 pending + teammate '$mate' in $WJ_DATA_DIR"
+        fi
     else
         note "seeded $processed past days + a live today + 5 pending in $WJ_DATA_DIR"
     fi

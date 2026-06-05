@@ -1,4 +1,4 @@
-.TH WJ 1 "2026" "wj 0.1.0" "User Commands"
+.TH WJ 1 "2026" "wj 0.11.0" "User Commands"
 .SH NAME
 wj \- cross-project daily task & time tracker
 .SH SYNOPSIS
@@ -137,10 +137,11 @@ Dump raw events as csv / json / tsv over a date range.
 .TP
 .BI "search " query
 Find tasks across all recorded days by a case-insensitive substring of the id,
-project, or description. Most-recent first.
+project, description, or tags. Most-recent first. In a shared journal it scans
+every author's days.
 .PP
 The read views
-.RB ( status ", " show ", " grid ", " gantt ", " search ", " pending )
+.RB ( status ", " show ", " grid ", " gantt ", " search ", " pending ", " team )
 also accept
 .B --json
 for a stable machine-readable contract \(em this is what the UI front-end consumes.
@@ -174,8 +175,10 @@ Remove a pending task without starting it.
 .BI "assign " "P# who"
 Hand a backlog item to a teammate: it moves to their list (becoming
 .IR who/P# ).
-You act only on your own items; assign one to yourself to pick it up. Shared
-journals also accept
+You can push one of your own items to someone, or claim a teammate's for
+yourself \(em
+.B wj assign alice/P1 me
+\(em but not move an item between two other people. Shared journals also accept
 .B pending --mine
 to list only your backlog. Items are author-partitioned like the day log, so the
 backlog merges conflict-free.
@@ -278,7 +281,7 @@ export format: csv | json | tsv. Default csv.
 Optional deadline for a pending task (add).
 .TP
 .B --json
-Emit a machine-readable view (status, show, grid, gantt, search, pending).
+Emit a machine-readable view (status, show, grid, gantt, search, pending, team).
 .TP
 .B --mine
 In a shared journal, restrict status / grid / pending to your own items
@@ -331,6 +334,11 @@ Keys:
 .I totals
 (exact|slot),
 .I default_project ", "
+.I actor
+(author handle stamped on your events in a shared journal \(em empty derives it
+from your git
+.I user.email
+local-part, then $USER; normalized to a-z0-9-),
 .I interface
 (minimal|ui \(em the front-end for a bare
 .BR wj ),
@@ -368,7 +376,8 @@ and
 Settings, INI format (override with \fB$WJ_CONFIG\fR).
 .TP
 .I ~/.local/share/wj/YYYY/MM/DD.tsv
-The append-only event log (override with \fB$WJ_DATA_DIR\fR).
+The append-only event log, one file per day (override with \fB$WJ_DATA_DIR\fR). In
+a shared journal each author writes \fIDD.<actor>.tsv\fR and reads union them all.
 .SH EXAMPLES
 .PP
 .nf

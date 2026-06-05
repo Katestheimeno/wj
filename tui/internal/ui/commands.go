@@ -94,13 +94,15 @@ func (m Model) loadTeam() tea.Cmd {
 }
 
 // loadSyncable probes whether the data dir is a git sync repo, without doing a
-// full sync. `wj sync status` errors with "not a sync repo" when it isn't. The
-// resulting syncMsg has an empty note, so it only sets m.syncable (no footer).
+// full sync. `wj sync status` prints "not a sync repo" (on stdout, exit 0) when
+// it isn't — so check both the output and the wrapped error. The resulting
+// syncMsg has an empty note, so it only sets m.syncable (no footer).
 func (m Model) loadSyncable() tea.Cmd {
 	cli := m.cli
 	return func() tea.Msg {
 		out, err := cli.Mutate("sync", "status")
-		if err != nil && strings.Contains(out, "not a sync repo") {
+		if strings.Contains(out, "not a sync repo") ||
+			(err != nil && strings.Contains(err.Error(), "not a sync repo")) {
 			return syncMsg{ok: false}
 		}
 		return syncMsg{ok: true}
@@ -109,13 +111,18 @@ func (m Model) loadSyncable() tea.Cmd {
 
 // runSync runs `wj sync` in the background. It never blocks the UI (the CLI is
 // non-interactive with a timeout). A "not a sync repo" result is reported as
-// ok=false so a non-shared journal silently disables auto-sync.
+// ok=false so a non-shared journal silently disables auto-sync. On any other
+// failure the reason (carried in err, since the CLI dies on stderr) is folded
+// into note so the footer can surface it.
 func (m Model) runSync() tea.Cmd {
 	cli := m.cli
 	return func() tea.Msg {
 		note, err := cli.Mutate("sync")
-		if err != nil && strings.Contains(note, "not a sync repo") {
+		if err != nil && strings.Contains(err.Error(), "not a sync repo") {
 			return syncMsg{ok: false}
+		}
+		if err != nil && note == "" {
+			note = strings.TrimPrefix(err.Error(), "wj sync: ")
 		}
 		return syncMsg{ok: true, note: note, err: err}
 	}
