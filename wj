@@ -689,6 +689,7 @@ cmd_continue() {
     desc=$(task_desc "$src" "$id")
     proj=$(task_project "$src" "$id")
     [[ -n $PROJECT_OVERRIDE ]] || PROJECT_OVERRIDE=$proj
+    local tags; tags=$(task_tags "$src" "$id")   # carry the source task's tags too
     # write to today, not ON: build the timestamp from today + (--at | now).
     local wts wfile newid active
     wts="${TODAY}T${AT:-$(date +%H:%M)}"
@@ -700,6 +701,7 @@ cmd_continue() {
     newid="T$(( $(max_task_id "$wfile") + 1 ))"
     append_event "$wts" "$newid" "$PROJECT_OVERRIDE" start "$desc"
     append_event "$wts" "$newid" "$PROJECT_OVERRIDE" log "continued from $ON $id"
+    [[ -n $tags ]] && append_event "$wts" "$newid" "$PROJECT_OVERRIDE" tag "$tags"
     printf '%s  %s  [%s]  started %s — %s  (continued from %s %s)\n' \
         "$newid" "${wts:11:5}" "$PROJECT_OVERRIDE" "$newid" "$desc" "$ON" "$id"
 }
@@ -802,7 +804,9 @@ _tag_op() {
     norm=""
     for t in "${ARGS[@]:1}"; do
         t=$(normalize_tag "$t")
-        [[ -n $t ]] && norm="${norm}${norm:+ }$t"
+        [[ -n $t ]] || continue
+        case " $norm " in *" $t "*) continue ;; esac   # de-dup within this call
+        norm="${norm}${norm:+ }$t"
     done
     [[ -n $norm ]] || die "no usable tags (letters/digits/-, e.g. billing or high-priority)"
     append_event "$ts" "$id" "$(task_project "$file" "$id")" "$evt" "$norm"
@@ -1589,10 +1593,10 @@ TASK COMMANDS
                       Runs alongside any task already going in the SAME project
                       (use --auto-pause, or auto_pause=on, to pause it first).
                       Given a pending id (P#) it promotes that backlog item instead.
-  continue <id>       Pick up a past day's task today: copies its description and
-                      --date YYYY-MM-DD  project into a fresh task for today (new id, own clock) and
-                      notes the lineage. --date (the source day) is required;
-                      --at sets the start time, --project overrides the project.
+  continue <id>       Pick up a past day's task today: copies its description,
+                      --date YYYY-MM-DD  project, and tags into a fresh task for today (new id, own
+                      clock) and notes the lineage. --date (the source day) is
+                      required; --at sets the start time, --project overrides it.
   pause  [id] [why]   Pause the running task (or the given id). Stops its clock.
   resume [id]         Resume the most-recent paused/deferred task (or given id).
                       Runs in parallel by default; --auto-pause pauses the

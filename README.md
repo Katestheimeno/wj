@@ -155,6 +155,7 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | Command | What it does |
 |---|---|
 | `wj start <desc\|P#>` | Begin a new task (next id `T1`, `T2`… per day). Runs alongside any task already going in the same project (pass `--auto-pause`, or set `auto_pause=on`, to pause it first). Given a pending id (`P#`) it promotes that backlog item instead (see [Pending backlog](#pending-backlog)). |
+| `wj continue <id> --date <day>` | Pick up a past day's task today: copies its description, project, **and tags** into a fresh task for today (new id, own clock) and notes the lineage. The `--date` source day is required. |
 | `wj pause [id] [why]` | Pause the running task (or a given id). Stops its clock. |
 | `wj resume [id]` | Resume the most-recent paused/deferred task (or a given id). |
 | `wj complete [id]` | Finish a task and sum its tracked time. |
@@ -165,7 +166,7 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `wj tag <id> <tag…>` | Add one or more free-form labels to a task — a cross-cutting axis beside its project. Normalized (lowercased; a leading `#` and spaces stripped, so `"High Priority"` → `high-priority`). Matched by `search`, aggregated by `report --by tag`. |
 | `wj untag <id> <tag…>` | Remove labels from a task. |
 | `wj cancel [id]` | Void a mistaken task: 0 time, hidden from status/grid/report (kept in the raw log for audit). |
-| `wj undo` | Take back the last logged event on a day (today, or `--date`) — drops the log's last line. Repeat to walk further back. (`continue` writes two events, so undoing a carry-over takes two passes.) |
+| `wj undo` | Take back the last logged event on a day (today, or `--date`) — drops the log's last line. Repeat to walk further back. (`continue` writes 2–3 events — start, lineage note, and tags — so undoing a carry-over takes a couple of passes.) |
 | `wj ls` | List currently-open tasks (in-progress / paused / deferred). Today by default; `--days N` scans the last N days (adds a DATE column) to catch timers left running earlier. |
 | `wj show <id>` | Full timeline of one task: start, notes, pauses/resumes, renames, moves, total time and status. Today by default; `--date` for a past day. |
 | `wj status [date]` | Per-task totals table for a day (default: today). **Default command.** |
@@ -220,9 +221,20 @@ you start one, at which point it becomes a normal tracked task.
 | `wj drop <P#>` | Remove a pending task without starting it. |
 | `wj start <P#>` | Promote: start the task now (carrying its desc + project) and remove it from the backlog. |
 
-**Shell completion:** add `eval "$(wj completion bash)"` to your `~/.bashrc` (or
-`wj completion zsh` to `~/.zshrc`) to complete commands, flags, task ids and
-project names.
+**Shell completion** completes commands, flags, task ids, project names, and tags.
+
+- **bash:** the package already installs it to `bash-completion`'s directory (or
+  add `eval "$(wj completion bash)"` to `~/.bashrc`). Needs the `bash-completion`
+  package active.
+- **zsh:** the bridge needs `compinit` to have run **first**, so in `~/.zshrc`:
+
+  ```zsh
+  autoload -U compinit && compinit
+  eval "$(wj completion zsh)"
+  ```
+
+  (If `eval "$(wj completion zsh)"` alone gives `compdef: command not found`, the
+  `compinit` line above is missing or comes after it.)
 
 ## How it works
 
@@ -362,7 +374,8 @@ Mutations run the same commands as the CLI, on the selected task: `p` pause,
 `r` resume, `c` complete, `d` defer, `a` amend, `m` move (with `⇥` project
 autocomplete), `n` log a note, `#` edit **tags** (space-separated; a `-tag`
 removes; `⇥` completes a known tag), `x` cancel (void), and `o` carry a past
-day's task over to today; `u` undoes the last logged event on the focused day.
+day's task over to today (with its tags); `u` undoes the last logged event on the
+focused day.
 Tags are a cross-cutting label beside the project — they show as `#chips` on the
 Timeline and search results, `/` search finds them, and `wj report --by tag`
 aggregates by them. `s` starts a

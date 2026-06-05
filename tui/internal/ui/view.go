@@ -701,7 +701,7 @@ func (m Model) helpOverlay() string {
 		{"a / m", "amend description / move (⇥ completes project)"},
 		{"n", "add a note (log) to the running task"},
 		{"#", "edit tags (space-separated; -tag removes; ⇥ completes a known tag)"},
-		{"o", "carry over (continue) a past day's task today — copies desc + project to a new id"},
+		{"o", "carry over (continue) a past day's task today — copies desc + project + tags to a new id"},
 		{"x / X", "cancel (void) — destructive · X also prompts for a time"},
 		{"u", "undo the last logged event on the focused day"},
 		{"", "on a past day, actions prompt for a time first"},
