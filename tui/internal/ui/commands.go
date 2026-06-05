@@ -1,8 +1,10 @@
 package ui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func (m Model) loadGantt() tea.Cmd {
@@ -76,6 +78,46 @@ func (m Model) loadActor() tea.Cmd {
 			return actorMsg{}
 		}
 		return actorMsg{name: name}
+	}
+}
+
+// loadTeam fetches the per-author standup for the team overlay (today).
+func (m Model) loadTeam() tea.Cmd {
+	cli, today := m.cli, m.today
+	return func() tea.Msg {
+		t, err := cli.Team(today)
+		if err != nil {
+			return teamMsg{err: err}
+		}
+		return teamMsg{members: t.Members}
+	}
+}
+
+// loadSyncable probes whether the data dir is a git sync repo, without doing a
+// full sync. `wj sync status` errors with "not a sync repo" when it isn't. The
+// resulting syncMsg has an empty note, so it only sets m.syncable (no footer).
+func (m Model) loadSyncable() tea.Cmd {
+	cli := m.cli
+	return func() tea.Msg {
+		out, err := cli.Mutate("sync", "status")
+		if err != nil && strings.Contains(out, "not a sync repo") {
+			return syncMsg{ok: false}
+		}
+		return syncMsg{ok: true}
+	}
+}
+
+// runSync runs `wj sync` in the background. It never blocks the UI (the CLI is
+// non-interactive with a timeout). A "not a sync repo" result is reported as
+// ok=false so a non-shared journal silently disables auto-sync.
+func (m Model) runSync() tea.Cmd {
+	cli := m.cli
+	return func() tea.Msg {
+		note, err := cli.Mutate("sync")
+		if err != nil && strings.Contains(note, "not a sync repo") {
+			return syncMsg{ok: false}
+		}
+		return syncMsg{ok: true, note: note, err: err}
 	}
 }
 

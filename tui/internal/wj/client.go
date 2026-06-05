@@ -154,6 +154,20 @@ func (c Client) Search(query string) ([]Found, error) {
 	return out, nil
 }
 
+// Team fetches the per-author standup for a day (who's running what + totals).
+// Empty date means today. In a non-shared journal this is just you.
+func (c Client) Team(date string) (*Team, error) {
+	args := []string{"team"}
+	if date != "" {
+		args = append(args, "--date", date)
+	}
+	var t Team
+	if err := c.readJSON(&t, args...); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 // Show fetches one task's full timeline on a given day. Empty date means today.
 func (c Client) Show(id, date string) (*Show, error) {
 	args := []string{"show", id}

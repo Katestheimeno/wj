@@ -1115,7 +1115,7 @@ func TestSetLayout(t *testing.T) {
 	if defaultLayout != want {
 		t.Errorf("unknown/empty SetLayout should not change defaultLayout (= %d)", defaultLayout)
 	}
-	if got := New(wj.Client{}, "", "", "", "").layout; got != want {
+	if got := New(wj.Client{}, "", "", "", "", 0).layout; got != want {
 		t.Errorf("New should adopt defaultLayout, got %d want %d", got, want)
 	}
 }
@@ -1761,5 +1761,56 @@ func TestTeammatePendingGating(t *testing.T) {
 	next, _ := mustModel(m.handleKey(keyMsg("x")))
 	if !next.confirm.active {
 		t.Error("'x' on your own pending item should arm the drop confirm")
+	}
+}
+
+func TestFilteredTasksMineOnly(t *testing.T) {
+	m := drilled()
+	m.actor = "me"
+	m.grid.Tasks = []wj.GridTask{
+		{ID: "T1", Actor: "me", Project: "backend", Status: "in-progress"},
+		{ID: "alex/T1", Actor: "alex", Project: "ops", Status: "in-progress"},
+	}
+	if got := len(m.filteredTasks()); got != 2 {
+		t.Fatalf("default (everyone) = %d, want 2", got)
+	}
+	m.mineOnly = true
+	got := m.filteredTasks()
+	if len(got) != 1 || got[0].ID != "T1" {
+		t.Fatalf("mineOnly should keep only your own task, got %v", got)
+	}
+	// solo/pre-collab (no actor) is unaffected by the toggle
+	m.actor = ""
+	if len(m.filteredTasks()) != 2 {
+		t.Error("mineOnly with no actor should show all tasks (back-compat)")
+	}
+}
+
+func TestByCyclesThroughPerson(t *testing.T) {
+	m := sampleModel()
+	m.pane = paneRange
+	m.by = "project"
+	for _, want := range []string{"task", "person", "project"} {
+		next, _ := mustModel(m.handleKey(keyMsg("b")))
+		if next.by != want {
+			t.Fatalf("b cycle: got %q, want %q", next.by, want)
+		}
+		m = next
+	}
+}
+
+func TestTeamOverlayRender(t *testing.T) {
+	m := sampleModel()
+	m.actor = "me"
+	m.showTeam = true
+	m.team = []wj.Member{
+		{Actor: "me", Running: true, Desc: "invoice flow", Project: "backend", Minutes: 30, TotalMinutes: 90},
+		{Actor: "alex", Running: false, TotalMinutes: 120},
+	}
+	out := m.teamOverlay()
+	for _, want := range []string{"me (you)", "invoice flow", "alex", "idle"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("team overlay missing %q in:\n%s", want, out)
+		}
 	}
 }

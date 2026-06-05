@@ -113,7 +113,10 @@ Full timeline of one task. Today by default;
 for a past day.
 .TP
 .BI "status " [date]
-Per-task totals table for a day (default: today). The default command.
+Per-task totals table for a day (default: today). The default command. In a
+shared journal it shows everyone's tasks for the day; add
+.B --mine
+to list only your own.
 .TP
 .BI "grid " [date]
 Slot-by-slot schedule for a day. The time axis is framed by
@@ -122,7 +125,8 @@ auto-expanding to include any work tracked outside those hours (and auto-fitting
 the day when the bounds are unset), so nothing is ever clipped.
 .TP
 .B gantt
-Multi-day overview: rows (\fB--by\fR project|task) by days of tracked time.
+Multi-day overview: rows (\fB--by\fR project|task|person) by days of tracked time.
+In a shared journal, \fB--by person\fR rolls each author's time into one row.
 Default range: the last 7 days through \fB--to\fR.
 .TP
 .B report
@@ -195,7 +199,14 @@ tasks \(em yours as bare
 teammates' as
 .IR actor/T# .
 Non-interactive callers (e.g. the wj-tui front-end) never block on an ssh
-passphrase: keep your key in an agent, or sync manually from a shell.
+passphrase: keep your key in an agent, or sync manually from a shell. The
+front-end also syncs on its own every
+.I auto_sync
+minutes (configurable; the
+.B S
+key forces one, and the
+.B w
+key opens a live team panel).
 .TP
 .B sync status
 Branch, clean/uncommitted, and ahead/behind counts.
@@ -253,7 +264,7 @@ Override project detection (e.g. for non-git work).
 Inclusive date range YYYY-MM-DD (report, export, gantt).
 .TP
 .BI "--by " KEY
-Grouping: project | task | day | tag | person (report); project | task (gantt).
+Grouping: project | task | day | tag | person (report); project | task | person (gantt).
 With
 .BR "--by tag" ", a task is counted under each of its tags, so the report TOTAL"
 can exceed real tracked time;
@@ -268,6 +279,13 @@ Optional deadline for a pending task (add).
 .TP
 .B --json
 Emit a machine-readable view (status, show, grid, gantt, search, pending).
+.TP
+.B --mine
+In a shared journal, restrict status / grid / pending to your own items
+(default: show everyone's). Your tasks read as bare
+.IR T# ;
+teammates' as
+.IR actor/T# .
 .TP
 .B --parallel
 start/resume: leave any other running task in the same project running (track
@@ -331,6 +349,11 @@ destructive, which guards only cancel/void and pending drop),
 .I icons
 (the wj-tui status markers \(em on uses Nerd-Font icons and needs a patched font,
 off uses the universal ASCII set; default off),
+.I auto_sync
+(the wj-tui background git-sync interval in minutes \(em it runs
+.B wj sync
+that often to pull teammates' work and push yours; 0 or off disables it, leaving
+the manual S key; default 5, and only acts once the data dir is a sync repo),
 .IR layout_sidebar ", " layout_split
 (optional overrides defining a
 .I custom

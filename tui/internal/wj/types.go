@@ -107,6 +107,25 @@ type Found struct {
 	Tags    []string `json:"tags"`
 }
 
+// Team mirrors `wj team --json`: who is working on what right now across every
+// author in the shared log, for a given day.
+type Team struct {
+	Date    string   `json:"date"`
+	Members []Member `json:"members"`
+}
+
+// Member is one author's standup line: their currently-running task (if
+// Running) and their tracked total for the day.
+type Member struct {
+	Actor        string `json:"actor"`
+	Running      bool   `json:"running"`
+	ID           string `json:"id"`
+	Desc         string `json:"desc"`
+	Project      string `json:"project"`
+	Minutes      int    `json:"minutes"`
+	TotalMinutes int    `json:"total_minutes"`
+}
+
 // GanttRow is one project (or task) row. PerDay maps a date (YYYY-MM-DD) to
 // minutes worked; days with no work are absent (treat as zero).
 type GanttRow struct {

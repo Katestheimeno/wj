@@ -526,7 +526,25 @@ wj sync status                                  # branch, clean/dirty, ahead/beh
 - **Privacy:** the synced repo is the *team* journal. Keep private work in a
   separate, non-synced data dir via `WJ_DATA_DIR`.
 
-In the TUI, press **`S`** to sync.
+### Team views & filters
+
+```sh
+wj team                       # who's running what right now (+ each one's day total)
+wj report --by person         # range rollup of tracked time per author
+wj gantt  --by person         # the multi-day grid, one row per author
+wj status --mine              # just your own tasks (status/grid default to everyone)
+wj pending --mine             # just your own backlog
+```
+
+In the TUI:
+
+- **`S`** forces a sync; the front-end also **auto-syncs every `auto_sync`
+  minutes** (config, default 5; set `auto_sync = 0`/`off` for manual-only). It
+  only runs once the data dir is a sync repo, and a `syncing…` hint shows it.
+- **`w`** opens a live **team** overlay (who's on what + day totals).
+- **`b`** cycles the Range rows **project → task → person**.
+- **`M`** toggles the day's Tasks panel between **everyone** and **mine**.
+- Teammates' tasks and backlog items are tinted by author and read-only.
 
 ## Retroactive entry
 

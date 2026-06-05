@@ -1,6 +1,7 @@
 # wj — collaborative work journal (design & plan)
 
-Status: **in progress** on branch `feat/collab`. Target release: **0.12.0**.
+Status: **feature-complete** on branch `feat/collab` (Phases 1–3 done). Target
+release: **0.12.0**.
 
 Turn wj from a single-user tracker into a shared, multi-person work journal —
 **without a server**, keeping the plain-files / append-only design intact.
@@ -90,8 +91,8 @@ union the reads.** No CRDTs, no server, no conflict UI.
 - [x] `wj team` (text + `--json`) — each author's running task (or idle) + their
       day total; you are marked `(you)`.
 - [x] `report --by person` — range rollup by author (`id_actor` key).
-- [ ] `gantt --by person` + the TUI `b` cycle including person (Phase 3 polish).
-- [ ] `--mine` / `--all` read filters (today the views show the union).
+- [x] `gantt --by person` + the TUI `b` cycle including person (Phase 3).
+- [x] `--mine` read filter on status/grid + TUI Tasks toggle (M) (Phase 3).
 
 ### Phase 2 — shared backlog & assignment ✅
 - [x] Author-partitioned pending (`pending.<actor>.tsv`), union reads, legacy
@@ -100,8 +101,13 @@ union the reads.** No CRDTs, no server, no conflict UI.
 - [x] `pending --mine` filter; due/drop/raise/lower/start gated to your own items.
 - [x] JSON gains `actor`; TUI gates teammate backlog ops + tints by author.
 
-### Phase 3 — liveness & polish
-- [ ] Background auto-sync on a tick; TUI team/presence panel; filter-by-person.
+### Phase 3 — liveness & polish ✅
+- [x] Background auto-sync: the TUI runs `wj sync` every `auto_sync` minutes
+      (config; default 5; 0/off disables), once the data dir is a sync repo.
+      The `S` key forces a sync; a "syncing…" footer hint shows it in flight.
+- [x] Team/presence overlay (`w`): one row per author — running task + day total.
+- [x] `gantt --by person` and the TUI `b` cycle (project → task → person).
+- [x] `--mine` read filter (status/grid CLI; `M` toggles the TUI Tasks panel).
 
 ---
 

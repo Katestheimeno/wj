@@ -40,6 +40,7 @@ layout="balanced"       # wj-tui panel layout: balanced | spotlight | golden | c
 sidebar="left"          # wj-tui sidebar side: left | right
 confirm="destructive"   # wj-tui y/n guard before actions: all | destructive | off
 icons="off"             # wj-tui status markers: on (Nerd-Font icons) | off (ASCII)
+auto_sync="5"           # wj-tui background git sync interval in minutes (0/off = manual only)
 layout_sidebar=""       # custom layout: sidebar width %, e.g. 28 (empty = preset's)
 layout_split=""         # custom layout: panel weights focused,hi,lo, e.g. 60,25,15
 # wj-tui per-panel title colors (each its own, so the panels stay distinct):
@@ -74,7 +75,7 @@ self_path() {
 # config file can neither inject arbitrary shell variables nor run commands —
 # unlike the old `source`-the-file approach).
 _CFG_KEYS=" shift_start shift_end slot_minutes round totals default_project actor \
-auto_pause interface accent layout sidebar confirm icons layout_sidebar layout_split \
+auto_pause interface accent layout sidebar confirm icons auto_sync layout_sidebar layout_split \
 color_projects color_tasks color_pending color_range color_day color_timeline "
 
 seed_config() {
@@ -118,6 +119,10 @@ confirm = $confirm
 # wj-tui status markers: on uses Nerd-Font icons (needs a patched font), off
 # uses the universal ASCII set (> running, = paused, » deferred, x done).
 icons = $icons
+# wj-tui background sync: minutes between automatic 'wj sync' runs (pull+push) in
+# a shared journal; 0 (or off) disables it, leaving the manual 'S' key. Only acts
+# once the data dir is a sync repo (wj sync init).
+auto_sync = $auto_sync
 # Optional 'custom' layout proportions (then set layout = custom):
 layout_sidebar = $layout_sidebar   # sidebar width %, e.g. 28
 layout_split   = $layout_split     # focused,hi,lo weights, e.g. 60,25,15
@@ -1204,11 +1209,12 @@ cmd_status() {
     nm=$(report_nm "$d" "$file")
     (( JSON )) && { json_status "$d" "$file" "$nm"; return; }
     day_has_events "$d" || { printf 'No tasks for %s\n' "$d"; return; }
-    printf '\nTasks — %s\n\n' "$d"
+    printf '\nTasks — %s%s\n\n' "$d" "$( (( MINE )) && printf ' (mine)')"
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ID PROJECT STATUS TIME DESCRIPTION
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ---- ---------------- ------------ ------- -----------
     while read -r id; do
         [[ -z $id ]] && continue
+        (( MINE )) && [[ $id == */* ]] && continue   # --mine: skip teammates' tasks
         task_cancelled "$file" "$id" && continue
         local p st mins desc
         p=$(task_project "$file" "$id")
@@ -1221,6 +1227,7 @@ cmd_status() {
     local tot=0
     while read -r id; do
         [[ -z $id ]] && continue
+        (( MINE )) && [[ $id == */* ]] && continue
         task_cancelled "$file" "$id" && continue
         tot=$(( tot + $(task_minutes "$file" "$id" "$nm") ))
     done < <(task_ids "$file")
@@ -1317,6 +1324,7 @@ cmd_grid() {
     local -a ids=()
     while read -r i; do
         [[ -n $i ]] || continue
+        (( MINE )) && [[ $i == */* ]] && continue
         task_cancelled "$file" "$i" && continue
         ids+=("$i")
     done < <(task_ids "$file")
@@ -1461,6 +1469,7 @@ json_status() {
     if day_has_events "$d"; then
         while read -r id; do
             [[ -z $id ]] && continue
+            (( MINE )) && [[ $id == */* ]] && continue
             task_cancelled "$file" "$id" && continue
             p=$(task_project "$file" "$id"); st=$(task_status "$file" "$id")
             mins=$(task_minutes "$file" "$id" "$nm"); desc=$(task_desc "$file" "$id")
@@ -1538,6 +1547,7 @@ json_grid() {
     if day_has_events "$d"; then
         while read -r id; do
             [[ -z $id ]] && continue
+            (( MINE )) && [[ $id == */* ]] && continue
             task_cancelled "$file" "$id" && continue
             (( first )) && first=0 || printf ','
             printf '{"id":%s,"actor":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s,"segments":%s}' \
@@ -1557,7 +1567,8 @@ json_grid() {
 cmd_gantt() {
     local to=${TO:-${ON:-$TODAY}} from=${FROM:-}
     [[ -n $from ]] || from=$(date -d "$to -6 day" +%Y-%m-%d)   # default: last 7 days
-    case $BY in project|task) ;; *) die "--by must be project|task" ;; esac
+    case $BY in project|task|person) ;; *) die "--by must be project|task|person" ;; esac
+    local me; me=$(cur_actor)
 
     local -a days=(); local d
     while read -r d; do days+=("$d"); done < <(iter_dates "$from" "$to")
@@ -1576,6 +1587,7 @@ cmd_gantt() {
             case $BY in
                 project) key=$proj; lbl=$proj ;;
                 task)    key="$d/$id"; lbl="$id  $(task_desc "$file" "$id")" ;;
+                person)  key=$(id_actor "$id"); lbl=$key; [[ $key == "$me" ]] && lbl="$key (you)"; proj=$key ;;
             esac
             m=$(task_minutes "$file" "$id" "$nm")
             (( m > 0 )) || continue
@@ -2045,7 +2057,7 @@ VIEW & ANALYSIS
                       Today by default; --date YYYY-MM-DD for a past day.
   status [date]       Per-task totals table for a day (default: today). Default cmd.
   grid   [date]       Slot-by-slot schedule for a day (see SYMBOLS below).
-  gantt  [flags]      Multi-day overview: rows (--by project|task) x days of time.
+  gantt  [flags]      Multi-day overview: rows (--by project|task|person) x days.
                       Default range: last 7 days through --to. The headline UI view.
                       --by task lists each day's tasks separately (ids are per-day).
   search <query>      Find tasks (all-time) by id / project / description substring.
@@ -2078,10 +2090,12 @@ FLAGS
                       On start: where the task lives. On pause/complete/etc: scope.
   --from D --to D     Inclusive date range YYYY-MM-DD (report, export, gantt).
   --by KEY            row grouping: project | task | day | tag | person (report);
-                      project | task (gantt). Default: project. (--by tag fans a
+                      project | task | person (gantt). Default: project. (--by tag fans a
                       task out across each of its tags, so the TOTAL can exceed
                       real time; --by person groups by author in a shared log.)
   --due YYYY-MM-DD    add: optional deadline for a pending task.
+  --mine              shared journal: restrict status/grid/pending to your own
+                      items (default shows everyone's).
   --format FMT        export format: csv | json | tsv. Default: csv.
   --parallel          start/resume: leave any other running task in the same
                       project running, so you track several in parallel.
@@ -2118,6 +2132,7 @@ CONFIG  (~/.config/wj/cfg — INI [sections], created on first run)
   sidebar                   wj-tui sidebar side: left | right        (left)
   confirm                   wj-tui y/n guard: all|destructive|off    (destructive)
   icons                     wj-tui status markers: on|off            (off)
+  auto_sync                 wj-tui bg git sync interval in min (0=off)(5)
   layout_sidebar            custom layout sidebar width %, e.g. 28    ()
   layout_split              custom layout weights focused,hi,lo      ()
   color_projects            per-panel title colors in wj-tui — one   (39)
@@ -2192,6 +2207,7 @@ main() {
                 [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
                 [[ -n ${confirm:-} ]] && uiargs+=(-confirm "$confirm")
                 [[ -n ${icons:-} ]] && uiargs+=(-icons "$icons")
+                [[ ${auto_sync:-} =~ ^[0-9]+$ ]] && uiargs+=(-autosync "$auto_sync")
                 [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
                 [[ -n ${sidebar:-} ]] && uiargs+=(-sidebar "$sidebar")
                 [[ -n ${layout_sidebar:-} ]] && uiargs+=(-layout-sidebar "$layout_sidebar")
@@ -2213,6 +2229,7 @@ main() {
             [[ -n ${accent:-} ]] && uiargs+=(-accent "$accent")
             [[ -n ${confirm:-} ]] && uiargs+=(-confirm "$confirm")
             [[ -n ${icons:-} ]] && uiargs+=(-icons "$icons")
+            [[ ${auto_sync:-} =~ ^[0-9]+$ ]] && uiargs+=(-autosync "$auto_sync")
             [[ -n ${layout:-} ]] && uiargs+=(-layout "$layout")
             [[ -n ${sidebar:-} ]] && uiargs+=(-sidebar "$sidebar")
             [[ -n ${layout_sidebar:-} ]] && uiargs+=(-layout-sidebar "$layout_sidebar")

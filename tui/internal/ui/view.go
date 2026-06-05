@@ -27,6 +27,12 @@ func (m Model) View() string {
 			footerStyle.Render("press ? or esc to close")
 	}
 
+	if m.showTeam {
+		return header + "\n" +
+			panel("Team — "+m.today, accent, m.teamOverlay(), true, w, 0) + "\n" +
+			footerStyle.Render("press w or esc to close")
+	}
+
 	if m.search.active {
 		return header + "\n" +
 			panel("Search", accent, m.searchOverlay(w), true, w, 0) + "\n" +
@@ -162,6 +168,8 @@ func (m Model) renderFooter(w int) string {
 		b.WriteString(errStyle.Render(truncate(pickGlyph("!", "⚠")+" "+m.err, w)) + "\n")
 	} else if m.notice != "" {
 		b.WriteString(noticeStyle.Render(truncate(pickGlyph("+", "✓")+" "+m.notice, w)) + "\n")
+	} else if m.syncing {
+		b.WriteString(dimStyle.Render(truncate(pickGlyph("~", "⟳")+" syncing…", w)) + "\n")
 	}
 	switch {
 	case m.input.active:
@@ -688,7 +696,8 @@ func (m Model) helpOverlay() string {
 		{"⇧1 / ⇧2 / ⇧3", "set window span: 1 / 7 / 30 days"},
 		{"~View", ""},
 		{"/", "search all tasks (id / project / description); Enter jumps"},
-		{"b", "toggle the Projects rows between project and task"},
+		{"b", "cycle the Range rows: project → task → person"},
+		{"M", "Tasks panel: toggle mine-only vs everyone (shared journal)"},
 		{"", "selecting a project filters the day's Tasks"},
 		{"", "selecting a Today-section project also jumps to today"},
 		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden"},
@@ -720,6 +729,7 @@ func (m Model) helpOverlay() string {
 		{"Enter / Esc", "submit · cancel"},
 		{"~General", ""},
 		{"S", "sync the shared journal (git pull/push) — needs `wj sync init` once"},
+		{"w", "team overlay: who's working on what right now (esc/w closes)"},
 		{"?", "toggle this help"},
 		{"Ctrl+Z", "suspend to the background (fg to resume)"},
 		{"q / Ctrl+C", "quit"},
@@ -732,6 +742,33 @@ func (m Model) helpOverlay() string {
 			continue
 		}
 		b.WriteString("  " + selStyle.Render(padRight(key, 16)) + "  " + dimStyle.Render(desc) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// teamOverlay is the who's-working-on-what panel (opened with w), one row per
+// author: a running glyph, name (you marked), their current task, and day total.
+func (m Model) teamOverlay() string {
+	if len(m.team) == 0 {
+		return dimStyle.Render("  (no activity yet — or this isn't a shared journal)")
+	}
+	var b strings.Builder
+	for _, mem := range m.team {
+		name := mem.Actor
+		if mem.Actor == m.actor {
+			name += " (you)"
+		}
+		nameCol := lipgloss.NewStyle().Foreground(ProjectColor(mem.Actor)).Render(padRight(name, 18))
+		if mem.Running {
+			g, gc := statusGlyph("in-progress")
+			line := fmt.Sprintf("%s %-32.32s %s",
+				fmt.Sprintf("[%s]", mem.Project), mem.Desc, fmtDur(mem.Minutes))
+			b.WriteString("  " + lipgloss.NewStyle().Foreground(gc).Render(g) + " " + nameCol + " " +
+				line + dimStyle.Render("   Σ "+fmtDur(mem.TotalMinutes)) + "\n")
+		} else {
+			b.WriteString("  " + dimStyle.Render(pickGlyph("-", "")) + " " + nameCol + " " +
+				dimStyle.Render("idle   Σ "+fmtDur(mem.TotalMinutes)) + "\n")
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

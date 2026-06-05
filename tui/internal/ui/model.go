@@ -70,6 +70,20 @@ type tagsMsg struct{ names []string }
 // teammates' in a shared log).
 type actorMsg struct{ name string }
 
+// teamMsg carries the per-author standup for the team/presence overlay.
+type teamMsg struct {
+	members []wj.Member
+	err     error
+}
+
+// syncMsg is the result of a background/manual sync. ok reports whether the
+// data dir is a sync repo at all (so a non-shared journal stays quiet).
+type syncMsg struct {
+	ok   bool
+	note string
+	err  error
+}
+
 // searchMsg carries the results of a global task search. The query is echoed
 // back so a result for a query the user has since edited can be discarded.
 type searchMsg struct {
@@ -197,6 +211,16 @@ type Model struct {
 	zoomed    bool       // when true, the focused pane fills the screen (toggled with z)
 
 	confirmLevel confirmLevel // which actions pop a y/n guard (from the `confirm` config)
+
+	showTeam bool        // the team/presence overlay (toggled with w)
+	team     []wj.Member // per-author standup, loaded when the overlay opens
+
+	mineOnly bool // when true, the day's Tasks panel shows only your own tasks (toggle: M)
+
+	autoSync  int  // minutes between background syncs; 0 disables (from `auto_sync` config)
+	syncable  bool // data dir is a git repo, so auto/manual sync can run
+	syncing   bool // a sync is in flight (footer hint)
+	lastSyncN int  // tick of the last auto-sync, to space them out
 }
 
 // needConfirm reports whether an action should pop a y/n guard. destructive marks
@@ -238,17 +262,26 @@ func (m Model) activeLayout() layoutProfile {
 }
 
 // New builds the initial model. from/to may be empty to use the CLI default
-// range; by defaults to "project".
-func New(cli wj.Client, from, to, by, confirm string) Model {
+// range; by defaults to "project". autoSync is the background-sync interval in
+// minutes (0 disables); it only fires once the data dir is detected as a repo.
+func New(cli wj.Client, from, to, by, confirm string, autoSync int) Model {
 	if by == "" {
 		by = "project"
 	}
+	if autoSync < 0 {
+		autoSync = 0
+	}
 	return Model{cli: cli, from: from, to: to, by: by, today: time.Now().Format(dateLayout),
-		layout: defaultLayout, confirmLevel: parseConfirmLevel(confirm)}
+		layout: defaultLayout, confirmLevel: parseConfirmLevel(confirm), autoSync: autoSync}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadTags(), m.loadActor(), m.loadPending(), tickCmd())
+	cmds := []tea.Cmd{m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadTags(),
+		m.loadActor(), m.loadPending(), tickCmd()}
+	if m.autoSync > 0 { // detect whether the data dir is a sync repo (gates auto-sync)
+		cmds = append(cmds, m.loadSyncable())
+	}
+	return tea.Batch(cmds...)
 }
 
 // currentDay is the YYYY-MM-DD of the focused day column ("" if none).
@@ -441,14 +474,20 @@ func (m Model) filteredTasks() []wj.GridTask {
 		return nil
 	}
 	f := m.projectFilter()
-	if f == "" {
+	// mineOnly hides teammates' tasks (toggle: M); a non-shared log is unaffected.
+	mineOnly := m.mineOnly && m.actor != ""
+	if f == "" && !mineOnly {
 		return m.grid.Tasks
 	}
 	out := make([]wj.GridTask, 0, len(m.grid.Tasks))
 	for _, t := range m.grid.Tasks {
-		if t.Project == f {
-			out = append(out, t)
+		if f != "" && t.Project != f {
+			continue
 		}
+		if mineOnly && t.Actor != m.actor {
+			continue
+		}
+		out = append(out, t)
 	}
 	return out
 }

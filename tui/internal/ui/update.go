@@ -25,6 +25,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.runSearch(m.search.query))
 			}
 		}
+		// background auto-sync: every autoSync minutes, once we know the data dir
+		// is a sync repo. Non-interactive, so it never blocks the UI; the result
+		// triggers a reload to pull in teammates' new events.
+		if m.autoSync > 0 && m.syncable && !m.syncing && m.tickN-m.lastSyncN >= m.autoSync*60 {
+			m.syncing = true
+			m.lastSyncN = m.tickN
+			cmds = append(cmds, m.runSync())
+		}
 		return m, tea.Batch(cmds...)
 
 	case liveMsg:
@@ -46,6 +54,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actorMsg:
 		m.actor = msg.name
+		return m, nil
+
+	case teamMsg:
+		if msg.err == nil {
+			m.team = msg.members
+		}
+		return m, nil
+
+	case syncMsg:
+		m.syncing = false
+		m.syncable = msg.ok
+		if msg.note != "" || msg.err != nil { // a real sync ran (not just detection)
+			if msg.err != nil {
+				m.notice = "sync failed: " + strings.Join(strings.Fields(msg.note), " ")
+			} else {
+				m.notice = "synced"
+			}
+			return m, m.reloadAll() // pull in any events that arrived
+		}
 		return m, nil
 
 	case pendingMsg:
@@ -128,6 +155,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case mutationMsg:
+		m.syncing = false // a manual S routes through here; clear the in-flight hint
 		if msg.err != nil {
 			m.err = msg.err.Error()
 			m.notice = ""
@@ -174,6 +202,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "?", "esc", "q", "enter", "ctrl+c":
 			m.showHelp = false
+		}
+		return m, nil
+	}
+	if m.showTeam {
+		switch msg.String() {
+		case "w", "esc", "q", "enter", "ctrl+c":
+			m.showTeam = false
 		}
 		return m, nil
 	}
@@ -248,8 +283,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// sync the shared journal (git pull --rebase + push). Non-interactive
 		// here, so it never hangs; the result/error shows in the footer and a
 		// successful pull's new work appears on the next reload.
+		if m.syncing {
+			return m, nil
+		}
+		m.syncing = true
+		m.lastSyncN = m.tickN // a manual sync also resets the auto-sync clock
 		m.notice = "syncing…"
 		return m, m.mutate("sync")
+	case "w":
+		// team/presence overlay: who's working on what right now (wj team).
+		m.showTeam = true
+		return m, m.loadTeam()
+	case "M":
+		// toggle the day's Tasks panel between everyone's tasks and just mine.
+		m.mineOnly = !m.mineOnly
+		m.selTask = clamp(m.selTask, 0, len(m.filteredTasks())-1) // list may shrink
+		if m.mineOnly {
+			m.notice = "Tasks: mine only"
+		} else {
+			m.notice = "Tasks: everyone"
+		}
+		return m, m.loadShow(m.selectedTaskID(), m.currentDay()) // refresh the timeline
 	case "L":
 		// cycle the panel layout (balanced → spotlight → golden → …); live only,
 		// the startup default comes from the config's layout= / -layout.
@@ -978,9 +1032,13 @@ func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "]":
 		return m.shiftRange(+1)
 	case "b":
-		if m.by == "project" {
+		// cycle project -> task -> person -> project
+		switch m.by {
+		case "project":
 			m.by = "task"
-		} else {
+		case "task":
+			m.by = "person"
+		default:
 			m.by = "project"
 		}
 		m.focusedRow = m.allRow() // row set changes; reset to All
