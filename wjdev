@@ -189,6 +189,8 @@ seed_data() {
         yd=$(date -d "$today -1 day" +%Y-%m-%d)
         WJ_CONFIG=$mate_cfg "$WJ" start "incident write-up" --project ops --date "$yd" --at 14:00 >/dev/null
         WJ_CONFIG=$mate_cfg "$WJ" complete T1                                --date "$yd" --at 15:30 >/dev/null
+        # a teammate backlog item, to exercise the shared backlog / assign / gating
+        WJ_CONFIG=$mate_cfg "$WJ" add "draft the Q3 roadmap" --project meetings >/dev/null 2>&1 || true
         rm -f "$mate_cfg"
         note "seeded $processed past days + a live today + 5 pending + teammate '$mate' in $WJ_DATA_DIR"
     else

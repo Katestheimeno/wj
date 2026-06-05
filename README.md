@@ -221,7 +221,13 @@ you start one, at which point it becomes a normal tracked task.
 | `wj due <P#> <date\|->` | Set, or clear (`-`), a pending task's deadline. |
 | `wj raise <P#>` / `wj lower <P#>` | Move a pending task one step up / down. |
 | `wj drop <P#>` | Remove a pending task without starting it. |
+| `wj assign <P#> <who>` | Hand a backlog item to a teammate (it moves to their list as `who/P#`). Shared-journal only — see [Collaboration](#collaboration-shared-journal). |
 | `wj start <P#>` | Promote: start the task now (carrying its desc + project) and remove it from the backlog. |
+
+In a [shared journal](#collaboration-shared-journal) the backlog is also
+author-partitioned: `wj pending` shows everyone's (yours as `P#`, teammates' as
+`alice/P#`), `wj pending --mine` filters to yours, and you act on your own items —
+`assign` one to yourself to pick it up.
 
 **Shell completion** completes commands, flags, task ids, project names, and tags.
 

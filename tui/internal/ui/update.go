@@ -293,6 +293,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // reorder, and drop. Add/due open the inline prompt; drop asks to confirm.
 func (m Model) keyPending(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	n := len(m.pending)
+	// you can only act on your own backlog items; a teammate's is read-only
+	// (claim it with `wj assign <id> me`). Nav and `a` (add yours) are unaffected.
+	if p, ok := m.selectedPending(); ok && !m.pendingOwned(p) {
+		switch msg.String() {
+		case "enter", "d", "x", "[", "]":
+			m.notice = "read-only: " + p.ID + " is " + p.Actor + "'s backlog item"
+			return m, nil
+		}
+	}
 	switch msg.String() {
 	case "up", "k":
 		if m.selPend > 0 {

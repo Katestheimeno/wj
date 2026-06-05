@@ -166,6 +166,15 @@ Move a pending task one step down.
 .TP
 .BI "drop " P#
 Remove a pending task without starting it.
+.TP
+.BI "assign " "P# who"
+Hand a backlog item to a teammate: it moves to their list (becoming
+.IR who/P# ).
+You act only on your own items; assign one to yourself to pick it up. Shared
+journals also accept
+.B pending --mine
+to list only your backlog. Items are author-partitioned like the day log, so the
+backlog merges conflict-free.
 .SH SYNC (SHARED JOURNAL)
 Turn the data directory into a shared, multi-author journal over git. Each author
 writes their own per-day file (DD.<actor>.tsv), so concurrent work never

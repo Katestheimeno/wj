@@ -251,12 +251,19 @@ func (m Model) renderPending(cw, maxRows int, active bool) string {
 	items := make([]string, len(m.pending))
 	for i, p := range m.pending {
 		glyph, gc, due := m.dueBadge(p.Due)
+		// a teammate's item shows its owner inline (the id is already qualified,
+		// e.g. alice/P2) so a shared backlog reads clearly.
 		left := p.Desc
 		if left == "" {
 			left = p.ID
 		}
+		if !m.pendingOwned(p) {
+			left = p.ID + "  " + left
+		}
 		lc := lipgloss.Color("250")
-		if p.Project != "" {
+		if !m.pendingOwned(p) {
+			lc = ProjectColor(p.Actor) // tint a teammate's item by author
+		} else if p.Project != "" {
 			lc = ProjectColor(p.Project)
 		}
 		items[i] = listLine(glyph, gc, lc, left, due, i == m.selPend, cw)

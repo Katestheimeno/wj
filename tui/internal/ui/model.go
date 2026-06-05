@@ -485,3 +485,17 @@ func (m Model) selectedPendID() string {
 	}
 	return m.pending[m.selPend].ID
 }
+
+// selectedPending returns the highlighted backlog item (ok=false if none).
+func (m Model) selectedPending() (wj.Pending, bool) {
+	if m.selPend < 0 || m.selPend >= len(m.pending) {
+		return wj.Pending{}, false
+	}
+	return m.pending[m.selPend], true
+}
+
+// pendingOwned reports whether a backlog item is yours to act on (empty actor =
+// solo / pre-collab data, or before the actor loaded, counts as owned).
+func (m Model) pendingOwned(p wj.Pending) bool {
+	return p.Actor == "" || m.actor == "" || p.Actor == m.actor
+}

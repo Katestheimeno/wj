@@ -360,7 +360,46 @@ actor_stream() {
 # the backlog file of pending (not-yet-started) tasks. Unlike the day logs this
 # is mutable (add/drop/edit/reorder); line order is the user's manual priority.
 # Columns: id  created  project  due  desc
-pending_file() { printf '%s/pending.tsv' "$WJ_DATA_DIR"; }
+#
+# Like the day log, the backlog is author-partitioned: you write your own
+# pending.<actor>.tsv (so the existing single-file helpers operate on YOUR items),
+# reads union everyone's, and ownership moves with `assign`.
+pending_file()   { printf '%s/pending.%s.tsv' "$WJ_DATA_DIR" "$(cur_actor)"; }
+pending_legacy() { printf '%s/pending.tsv' "$WJ_DATA_DIR"; }
+
+# qualify / display / owner of a pending id (mirrors qkey / disp_id / id_actor).
+pqkey()      { case $1 in */*) printf '%s' "$1" ;; *) printf '%s/%s' "$(cur_actor)" "$1" ;; esac; }
+disp_pid()   { local a; a=$(cur_actor); case $1 in "$a"/*) printf '%s' "${1#"$a"/}" ;; *) printf '%s' "$1" ;; esac; }
+pid_actor()  { case $1 in */*) printf '%s' "${1%%/*}" ;; *) printf '%s' "$(cur_actor)" ;; esac; }
+
+# the file that owns a (possibly qualified) pending id
+pending_owner_file() {
+    local a; a=$(pid_actor "$1")
+    printf '%s/pending.%s.tsv' "$WJ_DATA_DIR" "$a"
+}
+
+# fold a pre-collab pending.tsv into your author file, once, before any write so
+# the single-file helpers (which use pending_file) see your existing items.
+pending_migrate() {
+    local legacy mine; legacy=$(pending_legacy); mine=$(pending_file)
+    [[ -f $legacy ]] || return 0
+    mkdir -p "$(dirname "$mine")"
+    if [[ -e $mine ]]; then cat "$legacy" >>"$mine" && rm -f "$legacy"
+    else mv "$legacy" "$mine"; fi
+}
+
+# every backlog item across all authors, id qualified actor/P# (legacy pending.tsv
+# -> the current actor). Emits: qualified-id <tab> created <tab> proj <tab> due <tab> desc
+pending_stream() {
+    [[ -d $WJ_DATA_DIR ]] || return 0
+    local f fn a
+    for f in "$WJ_DATA_DIR/pending.tsv" "$WJ_DATA_DIR/pending."*.tsv; do
+        [[ -f $f ]] || continue
+        fn=${f##*/}
+        if [[ $fn == pending.tsv ]]; then a=$(cur_actor); else a=${fn#pending.}; a=${a%.tsv}; fi
+        awk -v a="$a" -F'\t' 'BEGIN{OFS="\t"} NF>=1{$1=a"/"$1} {print}' "$f"
+    done
+}
 
 # split a TSV line ($1) into PF[] preserving empty fields. `read -r a b c`
 # with IFS=$'\t' can't be used here: tab is IFS-whitespace, so it merges
@@ -632,7 +671,7 @@ find_task() {
 # ---------------------------------------------------------------------------
 # Argument parsing — extract global flags, leave positionals in ARGS[]
 # ---------------------------------------------------------------------------
-AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; DUE=""; JSON=0; PAUSE_OVERRIDE=""
+AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; DUE=""; JSON=0; MINE=0; PAUSE_OVERRIDE=""
 declare -a ARGS=()
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
 # whether $1 is a real calendar date in YYYY-MM-DD form. GNU `date -d` would
@@ -656,6 +695,7 @@ parse_args() {
             --days)     need_val "$@"; DAYS=$2;     shift 2 ;;
             --due)      need_val "$@"; DUE=$2;      shift 2 ;;
             --json)     JSON=1;                     shift ;;
+            --mine)     MINE=1;                     shift ;;
             --parallel)   PAUSE_OVERRIDE=off;        shift ;;
             --auto-pause) PAUSE_OVERRIDE=on;         shift ;;
             --)         shift; while (( $# )); do ARGS+=("$1"); shift; done ;;
@@ -742,9 +782,12 @@ ui_colorspec() {
 # ---------------------------------------------------------------------------
 cmd_start() {
     local desc
-    if [[ ${ARGS[0]:-} =~ ^P[0-9]+$ ]]; then
+    if [[ ${ARGS[0]:-} =~ ^[a-z0-9-]+/P[0-9]+$ ]]; then
+        die "${ARGS[0]} is $(pid_actor "${ARGS[0]}")'s backlog item — assign it to yourself first (wj assign)"
+    elif [[ ${ARGS[0]:-} =~ ^P[0-9]+$ ]]; then
         # promote a pending task: carry its description + project, then drop it
         local pid=${ARGS[0]}
+        pending_migrate
         pending_get "$pid" || die "no such pending task: $pid"
         desc=$PEND_DESC
         [[ -n $PROJECT_OVERRIDE ]] || PROJECT_OVERRIDE=$PEND_PROJ
@@ -1009,6 +1052,7 @@ cmd_sync() {
     [[ -d $WJ_DATA_DIR/.git ]] || die "not a sync repo yet — run: wj sync init <remote-url>"
     sync_write_gitattributes
     sync_migrate_legacy
+    pending_migrate     # stamp a legacy pending.tsv with your author too
     _git add -A
     _git diff --cached --quiet 2>/dev/null || _git commit -q -m "wj: $(cur_actor) $(date +%Y-%m-%dT%H:%M)"
     local out
@@ -1036,6 +1080,7 @@ sync_init() {
     br=$(_git symbolic-ref --short HEAD 2>/dev/null || echo main)
     sync_write_gitattributes
     sync_migrate_legacy
+    pending_migrate
     _git add -A
     _git diff --cached --quiet 2>/dev/null || _git commit -q -m "wj: init $(cur_actor)"
     [[ -n $actor ]] || printf 'wj: syncing as author "%s" — set `actor =` in config to pin it\n' "$(cur_actor)" >&2
@@ -1585,8 +1630,8 @@ cmd_gantt() {
 
 # highest existing P# in the backlog (0 if none)
 pending_max_id() {
-    local f id rest n max=0
-    f=$(pending_file)
+    local f=${1:-} id rest n max=0
+    [[ -n $f ]] || f=$(pending_file)
     [[ -f $f ]] || { echo 0; return; }
     while IFS=$'\t' read -r id rest || [[ -n $id ]]; do
         n=${id#P}
@@ -1660,6 +1705,7 @@ cmd_add() {
     [[ -n $desc ]] || die "add needs a description (e.g. wj add \"Fix invoice\")"
     [[ -z $DUE ]] || valid_date "$DUE" || die "--due must be a real date YYYY-MM-DD (got '$DUE')"
     local f id created
+    pending_migrate
     f=$(pending_file); mkdir -p "$(dirname "$f")"
     id="P$(( $(pending_max_id) + 1 ))"
     created=$(date +%Y-%m-%dT%H:%M)
@@ -1668,63 +1714,89 @@ cmd_add() {
 }
 
 cmd_pending() {
-    local f line id created proj due desc first=1 found=0
-    f=$(pending_file)
+    local qid created proj due desc first=1 found=0 me; me=$(cur_actor)
     if (( JSON )); then
         printf '['
-        if [[ -f $f ]]; then
-            while IFS= read -r line || [[ -n $line ]]; do
-                tsv_split "$line"; id=${PF[0]:-}
-                [[ -n $id ]] || continue
-                (( first )) && first=0 || printf ','
-                printf '{"id":%s,"created":%s,"project":%s,"due":%s,"desc":%s}' \
-                    "$(json_str "$id")" "$(json_str "${PF[1]:-}")" "$(json_str "${PF[2]:-}")" \
-                    "$(json_str "${PF[3]:-}")" "$(json_str "${PF[4]:-}")"
-            done <"$f"
-        fi
+        while IFS=$'\t' read -r qid created proj due desc; do
+            [[ -n $qid ]] || continue
+            (( MINE )) && [[ $(pid_actor "$qid") != "$me" ]] && continue
+            (( first )) && first=0 || printf ','
+            printf '{"id":%s,"actor":%s,"created":%s,"project":%s,"due":%s,"desc":%s}' \
+                "$(json_str "$(disp_pid "$qid")")" "$(json_str "$(pid_actor "$qid")")" \
+                "$(json_str "$created")" "$(json_str "$proj")" "$(json_str "$due")" "$(json_str "$desc")"
+        done < <(pending_stream)
         printf ']\n'
         return
     fi
-    printf '\nPending\n\n'
-    if [[ -f $f ]]; then
-        while IFS= read -r line || [[ -n $line ]]; do
-            tsv_split "$line"; id=${PF[0]:-}
-            [[ -n $id ]] || continue
-            found=1; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
-            printf '%-4s  %-16.16s  %-10s  %s\n' "$id" "${proj:-—}" "${due:-—}" "$desc"
-        done <"$f"
-    fi
+    printf '\nPending%s\n\n' "$( (( MINE )) && printf ' (mine)')"
+    while IFS=$'\t' read -r qid created proj due desc; do
+        [[ -n $qid ]] || continue
+        (( MINE )) && [[ $(pid_actor "$qid") != "$me" ]] && continue
+        found=1
+        printf '%-10s  %-16.16s  %-10s  %s\n' "$(disp_pid "$qid")" "${proj:-—}" "${due:-—}" "$desc"
+    done < <(pending_stream)
     (( found )) || printf '  (empty)\n'
     printf '\n'
 }
 
+# reject a pending op on a teammate's backlog item (you act on your own).
+_pending_mine() {
+    [[ $1 =~ ^([a-z0-9-]+/)?P[0-9]+$ ]] || die "$2 needs a pending id (e.g. wj $2 P2)"
+    [[ $(pid_actor "$1") == "$(cur_actor)" ]] || die "$1 is $(pid_actor "$1")'s backlog item (assign it to yourself first)"
+    pending_migrate
+}
+
 cmd_drop() {
     local id=${ARGS[0]:-}
-    [[ $id =~ ^P[0-9]+$ ]] || die "drop needs a pending id (e.g. wj drop P2)"
-    pending_remove "$id" || die "no such pending task: $id"
-    printf '%s  dropped\n' "$id"
+    _pending_mine "$id" drop
+    pending_remove "$(disp_pid "$id")" || die "no such pending task: $id"
+    printf '%s  dropped\n' "$(disp_pid "$id")"
 }
 
 cmd_due() {
     local id=${ARGS[0]:-} val=${ARGS[1]:-}
-    [[ $id =~ ^P[0-9]+$ ]] || die "due needs a pending id (e.g. wj due P2 2026-06-10)"
+    _pending_mine "$id" due
     [[ -n $val ]] || die "due needs a date (YYYY-MM-DD) or - to clear"
     [[ $val == - ]] && val=""
     [[ -z $val ]] || valid_date "$val" || die "due date must be a real date YYYY-MM-DD or - (got '$val')"
-    pending_set_due "$id" "$val" || die "no such pending task: $id"
-    printf '%s  due %s\n' "$id" "${val:-cleared}"
+    pending_set_due "$(disp_pid "$id")" "$val" || die "no such pending task: $id"
+    printf '%s  due %s\n' "$(disp_pid "$id")" "${val:-cleared}"
 }
 
 cmd_raise() {
     local id=${ARGS[0]:-}
-    [[ $id =~ ^P[0-9]+$ ]] || die "raise needs a pending id (e.g. wj raise P2)"
-    pending_move "$id" up || die "no such pending task: $id"
+    _pending_mine "$id" raise
+    pending_move "$(disp_pid "$id")" up || die "no such pending task: $id"
 }
 
 cmd_lower() {
     local id=${ARGS[0]:-}
-    [[ $id =~ ^P[0-9]+$ ]] || die "lower needs a pending id (e.g. wj lower P2)"
-    pending_move "$id" down || die "no such pending task: $id"
+    _pending_mine "$id" lower
+    pending_move "$(disp_pid "$id")" down || die "no such pending task: $id"
+}
+
+# move a backlog item to another author (they then own it). Append-only on the
+# assignee's file + remove from yours, so it survives a git sync cleanly.
+cmd_assign() {
+    local id=${ARGS[0]:-} who=${ARGS[1]:-} f line found="" created proj due desc tf nid me
+    [[ $id =~ ^P[0-9]+$ ]] || die "assign your own pending id (e.g. wj assign P2 bob)"
+    [[ -n $who ]] || die "assign needs a person (e.g. wj assign $id bob)"
+    who=$(normalize_tag "$who")            # actor handles use the same charset as tags
+    [[ -n $who ]] || die "assign needs a valid person"
+    pending_migrate
+    me=$(cur_actor)
+    [[ $who == "$me" ]] && { printf '%s  already yours\n' "$id"; return 0; }
+    f=$(pending_file); [[ -f $f ]] || die "no such pending task: $id"
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ ${line%%$'\t'*} == "$id" ]] && { found=$line; break; }
+    done <"$f"
+    [[ -n $found ]] || die "no such pending task: $id"
+    tsv_split "$found"; created=${PF[1]:-}; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
+    pending_remove "$id"
+    tf="$WJ_DATA_DIR/pending.$who.tsv"
+    nid="P$(( $(pending_max_id "$tf") + 1 ))"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$nid" "$created" "$proj" "$due" "$desc" >>"$tf"
+    printf '%s  assigned to %s (now %s/%s)\n' "$id" "$who" "$who" "$nid"
 }
 
 # search every recorded task (all-time) by a case-insensitive substring,
@@ -1811,7 +1883,13 @@ cmd_export() {
 # internal: today's task ids (for shell completion)
 list_task_ids() { task_ids "$(day_file "$TODAY")"; }
 # internal: pending P# ids (for shell completion)
-list_pending_ids() { local f; f=$(pending_file); [[ -f $f ]] && awk -F'\t' '{print $1}' "$f"; }
+# your own backlog ids (for completing drop/due/raise/lower/assign — all own-only)
+list_pending_ids() {
+    local f
+    for f in "$(pending_legacy)" "$(pending_file)"; do
+        [[ -f $f ]] && awk -F'\t' 'NF{print $1}' "$f"
+    done | sort -u
+}
 # internal: distinct project names ever seen (for shell completion)
 list_projects() {
     [[ -d $WJ_DATA_DIR ]] || return 0
@@ -1827,6 +1905,15 @@ list_tags() {
         | sort -u | grep -v '^$'
 }
 
+# every author seen in the shared log (from per-actor day and pending files)
+list_actors() {
+    [[ -d $WJ_DATA_DIR ]] || { cur_actor; return; }
+    { find "$WJ_DATA_DIR" -type f -name '[0-9][0-9].*.tsv' -printf '%f\n' 2>/dev/null
+      find "$WJ_DATA_DIR" -maxdepth 1 -type f -name 'pending.*.tsv' -printf '%f\n' 2>/dev/null
+      printf '%s\n' "$(cur_actor)"
+    } | sed -E 's/^[0-9]{2}\.//; s/^pending\.//; s/\.tsv$//' | sort -u | grep -v '^$'
+}
+
 cmd_completion() {
     local shell=${ARGS[0]:-bash}
     case $shell in bash|zsh) ;; *) die "completion supports: bash | zsh" ;; esac
@@ -1836,7 +1923,7 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start continue pause resume complete defer log amend move tag untag cancel undo sync team ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
+    cmds="start continue pause resume complete defer log amend move tag untag cancel undo sync team ls show status grid gantt search add pending drop assign due raise lower report export ui config completion version help"
     flags="--at --date --project --from --to --format --by --days --due --json --parallel --auto-pause"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
@@ -1862,6 +1949,12 @@ _wj() {
             (( COMP_CWORD == 2 )) && COMPREPLY=( $(compgen -W "init status" -- "$cur") ) ;;
         drop|due|raise|lower)
             COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") ) ;;
+        assign)
+            if (( COMP_CWORD == 2 )); then
+                COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -W "$(wj _actors 2>/dev/null)" -- "$cur") )
+            fi ;;
         start)
             COMPREPLY=( $(compgen -W "$(wj _pending 2>/dev/null)" -- "$cur") ) ;;
     esac
@@ -1917,12 +2010,17 @@ PENDING (BACKLOG)
   add <desc>          Add a not-yet-started task to the backlog (id P1, P2, ...).
                       --project X sets its project; --due YYYY-MM-DD a deadline.
                       Pending tasks stay out of the time views until promoted.
-  pending             List the backlog in manual (pinned) order.
+  pending             List the backlog (manual order). In a shared log this is
+                      everyone's backlog: yours as P#, teammates' as actor/P#.
+                      `pending --mine` shows only yours.
   due <P#> <date|->   Set or clear (-) a pending task's deadline.
   raise <P#>          Move a pending task one step up (lower = one step down).
   lower <P#>          Move a pending task one step down.
   drop <P#>           Remove a pending task without starting it.
                       (Use `start P#` to promote one into a tracked task.)
+  assign <P#> <who>   Hand a backlog item to a teammate (it moves to their list,
+                      becoming who/P#). You act on your own items; assign one to
+                      yourself to pick it up. (Shared-journal only.)
 
 SYNC (SHARED / COLLABORATIVE JOURNAL)
   sync init <url>     Make the data dir a git repo, install the union merge rule,
@@ -2082,7 +2180,7 @@ main() {
     # mutating commands take a process-wide lock so concurrent invocations can't
     # interleave their read-derive-append sequences (see acquire_lock).
     case $cmd in
-        start|continue|pause|resume|complete|defer|log|amend|move|cancel|tag|untag|undo|add|drop|due|raise|lower)
+        start|continue|pause|resume|complete|defer|log|amend|move|cancel|tag|untag|undo|add|drop|assign|due|raise|lower)
             acquire_lock ;;
     esac
     case $cmd in
@@ -2146,6 +2244,7 @@ main() {
         add)      cmd_add ;;
         pending)  cmd_pending ;;
         drop)     cmd_drop ;;
+        assign)   cmd_assign ;;
         due)      cmd_due ;;
         raise)    cmd_raise ;;
         lower)    cmd_lower ;;
@@ -2158,6 +2257,7 @@ main() {
         _projects) list_projects ;;
         _tags)    list_tags ;;
         _actor)   printf '%s\n' "$(cur_actor)" ;;
+        _actors)  list_actors ;;
         help|-h|--help) cmd_help ;;
         *)        die "unknown command: $cmd (try 'wj help')" ;;
     esac

@@ -93,8 +93,12 @@ union the reads.** No CRDTs, no server, no conflict UI.
 - [ ] `gantt --by person` + the TUI `b` cycle including person (Phase 3 polish).
 - [ ] `--mine` / `--all` read filters (today the views show the union).
 
-### Phase 2 — shared backlog & assignment
-- [ ] `wj assign P3 bob`, `pending --mine`, actor-partitioned pending.
+### Phase 2 — shared backlog & assignment ✅
+- [x] Author-partitioned pending (`pending.<actor>.tsv`), union reads, legacy
+      `pending.tsv` migration; ids qualified (yours `P#`, teammates' `alice/P#`).
+- [x] `wj assign <P#> <who>` — moves an item to the assignee's list (`who/P#`).
+- [x] `pending --mine` filter; due/drop/raise/lower/start gated to your own items.
+- [x] JSON gains `actor`; TUI gates teammate backlog ops + tints by author.
 
 ### Phase 3 — liveness & polish
 - [ ] Background auto-sync on a tick; TUI team/presence panel; filter-by-person.

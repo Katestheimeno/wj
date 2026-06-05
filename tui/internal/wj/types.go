@@ -87,6 +87,7 @@ type Gantt struct {
 // no tracked time until promoted via `wj start P#`; Due is "" when unset.
 type Pending struct {
 	ID      string `json:"id"`
+	Actor   string `json:"actor"` // owning author in a shared backlog ("" = solo)
 	Created string `json:"created"`
 	Project string `json:"project"`
 	Due     string `json:"due"`

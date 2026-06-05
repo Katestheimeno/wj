@@ -1740,3 +1740,26 @@ func TestMyTasksFiltersToOwnActor(t *testing.T) {
 		t.Errorf("unset actor should return all %d tasks, got %d", 3, got)
 	}
 }
+
+func TestTeammatePendingGating(t *testing.T) {
+	m := pendingModel()
+	m.pane = panePending
+	m.actor = "me"
+	m.pending = []wj.Pending{{ID: "alex/P1", Actor: "alex", Desc: "their backlog item"}}
+	m.selPend = 0
+	for _, k := range []string{"enter", "d", "x", "[", "]"} {
+		next, _ := mustModel(m.handleKey(keyMsg(k)))
+		if next.notice == "" {
+			t.Errorf("%q on a teammate's pending item should set a read-only notice", k)
+		}
+		if next.input.active || next.confirm.active {
+			t.Errorf("%q on a teammate's pending item must not open input/confirm", k)
+		}
+	}
+	// your own pending item is still actionable
+	m.pending = []wj.Pending{{ID: "P1", Actor: "me", Desc: "mine"}}
+	next, _ := mustModel(m.handleKey(keyMsg("x")))
+	if !next.confirm.active {
+		t.Error("'x' on your own pending item should arm the drop confirm")
+	}
+}
