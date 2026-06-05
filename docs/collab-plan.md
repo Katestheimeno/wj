@@ -86,10 +86,12 @@ union the reads.** No CRDTs, no server, no conflict UI.
 - [x] Verified end-to-end: two-user union sync + same-author union-merge (no lost
       events) against a real bare remote.
 
-**1d · Team views**
-- [ ] `wj team` — who's on what right now (today's in-progress across actors).
-- [ ] `report --by person`, `gantt --by person`, a range team journal.
-- [ ] `--mine` / `--all` where it matters.
+**1d · Team views** ✅
+- [x] `wj team` (text + `--json`) — each author's running task (or idle) + their
+      day total; you are marked `(you)`.
+- [x] `report --by person` — range rollup by author (`id_actor` key).
+- [ ] `gantt --by person` + the TUI `b` cycle including person (Phase 3 polish).
+- [ ] `--mine` / `--all` read filters (today the views show the union).
 
 ### Phase 2 — shared backlog & assignment
 - [ ] `wj assign P3 bob`, `pending --mine`, actor-partitioned pending.

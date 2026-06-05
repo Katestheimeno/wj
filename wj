@@ -1182,6 +1182,82 @@ cmd_status() {
     printf '\nTotal tracked: %s\n\n' "$(fmt_dur "$tot")"
 }
 
+# who's working on what right now, across every author in the shared log. For a
+# day (today by default): each author's currently-running task (or idle), with
+# their tracked total. The collaborative quick-glance for a standup.
+cmd_team() {
+    local d=${ON:-$TODAY} file nm
+    file=$(day_file "$d")
+    nm=$(report_nm "$d" "$file")
+    (( JSON )) && { json_team "$d" "$file" "$nm"; return; }
+    declare -A RDESC=() RPROJ=() RMINS=() TOTAL=() PAUSED=() SEEN=()
+    declare -a ACTORS=()
+    local id a st mins
+    while read -r id; do
+        [[ -z $id ]] && continue
+        task_cancelled "$file" "$id" && continue
+        a=$(id_actor "$id")
+        [[ -n ${SEEN[$a]:-} ]] || { SEEN[$a]=1; ACTORS+=("$a"); }
+        mins=$(task_minutes "$file" "$id" "$nm")
+        TOTAL[$a]=$(( ${TOTAL[$a]:-0} + mins ))
+        st=$(task_status "$file" "$id")
+        if [[ $st == in-progress ]]; then
+            RDESC[$a]=$(task_desc "$file" "$id"); RPROJ[$a]=$(task_project "$file" "$id"); RMINS[$a]=$mins
+        elif [[ $st == paused ]]; then
+            PAUSED[$a]=$(( ${PAUSED[$a]:-0} + 1 ))
+        fi
+    done < <(task_ids "$file")
+    printf '\nTeam — %s\n\n' "$d"
+    if (( ${#ACTORS[@]} == 0 )); then printf '  (no activity)\n\n'; return; fi
+    local me label p; me=$(cur_actor)
+    while IFS= read -r a; do
+        label=$a; [[ $a == "$me" ]] && label="$a (you)"
+        if [[ -n ${RDESC[$a]:-} ]]; then
+            p=${PAUSED[$a]:-0}
+            printf '  %-16s  > %s [%s]  %s%s   Σ %s\n' "$label" "${RDESC[$a]}" "${RPROJ[$a]}" \
+                "$(fmt_dur "${RMINS[$a]}")" "$( (( p )) && printf ' (+%d paused)' "$p")" "$(fmt_dur "${TOTAL[$a]}")"
+        else
+            printf '  %-16s  - idle%s   Σ %s\n' "$label" \
+                "$( [[ -n ${PAUSED[$a]:-} ]] && printf ' (%d paused)' "${PAUSED[$a]}")" "$(fmt_dur "${TOTAL[$a]}")"
+        fi
+    done < <(printf '%s\n' "${ACTORS[@]}" | sort)
+    printf '\n'
+}
+
+# team JSON: one row per author with their running task (if any) and day total.
+json_team() {
+    local d=$1 file=$2 nm=$3
+    declare -A RID=() RDESC=() RPROJ=() RMINS=() TOTAL=() RUN=() SEEN=()
+    declare -a ACTORS=()
+    local id a st mins
+    while read -r id; do
+        [[ -z $id ]] && continue
+        task_cancelled "$file" "$id" && continue
+        a=$(id_actor "$id")
+        [[ -n ${SEEN[$a]:-} ]] || { SEEN[$a]=1; ACTORS+=("$a"); }
+        mins=$(task_minutes "$file" "$id" "$nm")
+        TOTAL[$a]=$(( ${TOTAL[$a]:-0} + mins ))
+        if [[ $(task_status "$file" "$id") == in-progress ]]; then
+            RID[$a]=$id; RDESC[$a]=$(task_desc "$file" "$id"); RPROJ[$a]=$(task_project "$file" "$id")
+            RMINS[$a]=$mins; RUN[$a]=1
+        fi
+    done < <(task_ids "$file")
+    printf '{"date":%s,"members":[' "$(json_str "$d")"
+    local first=1
+    while IFS= read -r a; do
+        [[ -z $a ]] && continue
+        (( first )) && first=0 || printf ','
+        if [[ -n ${RUN[$a]:-} ]]; then
+            printf '{"actor":%s,"running":true,"id":%s,"desc":%s,"project":%s,"minutes":%d,"total_minutes":%d}' \
+                "$(json_str "$a")" "$(json_str "${RID[$a]}")" "$(json_str "${RDESC[$a]}")" \
+                "$(json_str "${RPROJ[$a]}")" "${RMINS[$a]}" "${TOTAL[$a]}"
+        else
+            printf '{"actor":%s,"running":false,"total_minutes":%d}' "$(json_str "$a")" "${TOTAL[$a]}"
+        fi
+    done < <(printf '%s\n' "${ACTORS[@]}" | sort)
+    printf ']}\n'
+}
+
 cmd_grid() {
     local d=${ARGS[0]:-${ON:-$TODAY}} file
     file=$(day_file "$d")
@@ -1271,12 +1347,13 @@ cmd_report() {
                 project) key=$(task_project "$file" "$id") ;;
                 task)    key="$id  $(task_desc "$file" "$id")" ;;
                 day)     key=$d ;;
+                person|actor) key=$(id_actor "$id") ;;
                 tag)     # fan out: a task's time counts toward each of its tags
                     mins=$(task_minutes "$file" "$id" "$nm")
                     tags=$(task_tags "$file" "$id"); [[ -n $tags ]] || tags="(untagged)"
                     for t in $tags; do AGG[$t]=$(( ${AGG[$t]:-0} + mins )); done
                     continue ;;
-                *)       die "--by must be project|task|day|tag" ;;
+                *)       die "--by must be project|task|day|tag|person" ;;
             esac
             AGG[$key]=$(( ${AGG[$key]:-0} + $(task_minutes "$file" "$id" "$nm") ))
         done < <(task_ids "$file")
@@ -1759,14 +1836,14 @@ _wj() {
     local cur prev cmds flags cmd
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
-    cmds="start continue pause resume complete defer log amend move tag untag cancel undo sync ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
+    cmds="start continue pause resume complete defer log amend move tag untag cancel undo sync team ls show status grid gantt search add pending drop due raise lower report export ui config completion version help"
     flags="--at --date --project --from --to --format --by --days --due --json --parallel --auto-pause"
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
     fi
     case $prev in
         --format)    COMPREPLY=( $(compgen -W "csv json tsv" -- "$cur") ); return ;;
-        --by)        COMPREPLY=( $(compgen -W "project task day tag" -- "$cur") ); return ;;
+        --by)        COMPREPLY=( $(compgen -W "project task day tag person" -- "$cur") ); return ;;
         --project)   COMPREPLY=( $(compgen -W "$(wj _projects 2>/dev/null)" -- "$cur") ); return ;;
         completion)  COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") ); return ;;
     esac
@@ -1855,6 +1932,9 @@ SYNC (SHARED / COLLABORATIVE JOURNAL)
                       it run) whenever you want to share/receive work. Reads then
                       show everyone's tasks (yours bare T#, teammates' actor/T#).
   sync status         Branch, clean/uncommitted, and ahead/behind counts.
+  team                Who's working on what right now across the shared log — each
+                      author's running task (or idle) + their tracked total today
+                      (or --date). Also `report --by person` for range rollups.
   Authorship is the `actor` config (default: your git email / $USER). Each author
   writes their own per-day file, so concurrent work never conflicts.
 
@@ -1899,9 +1979,10 @@ FLAGS
                       --project meetings / --project "maroc ventes" / --project admin.
                       On start: where the task lives. On pause/complete/etc: scope.
   --from D --to D     Inclusive date range YYYY-MM-DD (report, export, gantt).
-  --by KEY            row grouping: project | task | day | tag (report); project |
-                      task (gantt). Default: project. (--by tag fans a task out
-                      across each of its tags, so the TOTAL can exceed real time.)
+  --by KEY            row grouping: project | task | day | tag | person (report);
+                      project | task (gantt). Default: project. (--by tag fans a
+                      task out across each of its tags, so the TOTAL can exceed
+                      real time; --by person groups by author in a shared log.)
   --due YYYY-MM-DD    add: optional deadline for a pending task.
   --format FMT        export format: csv | json | tsv. Default: csv.
   --parallel          start/resume: leave any other running task in the same
@@ -2056,6 +2137,7 @@ main() {
         cancel)   cmd_cancel ;;
         undo)     cmd_undo ;;
         sync)     cmd_sync ;;
+        team)     cmd_team ;;
         ls)       cmd_ls ;;
         show)     cmd_show ;;
         status)   cmd_status ;;

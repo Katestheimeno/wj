@@ -190,6 +190,15 @@ passphrase: keep your key in an agent, or sync manually from a shell.
 .TP
 .B sync status
 Branch, clean/uncommitted, and ahead/behind counts.
+.TP
+.B team
+Who is working on what right now across every author in the shared log: each
+author's currently-running task (or idle) and their tracked total for the day
+(today, or
+.BR --date ).
+See also
+.B report --by person
+for range rollups by author.
 .SH OTHER
 .TP
 .B ui
@@ -235,9 +244,12 @@ Override project detection (e.g. for non-git work).
 Inclusive date range YYYY-MM-DD (report, export, gantt).
 .TP
 .BI "--by " KEY
-Grouping: project | task | day | tag (report); project | task (gantt). With
+Grouping: project | task | day | tag | person (report); project | task (gantt).
+With
 .BR "--by tag" ", a task is counted under each of its tags, so the report TOTAL"
-can exceed real tracked time.
+can exceed real tracked time;
+.B --by person
+groups by author in a shared log.
 .TP
 .BI "--format " FMT
 export format: csv | json | tsv. Default csv.
