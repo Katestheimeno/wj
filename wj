@@ -901,10 +901,13 @@ cmd_defer() {
 cmd_log() {
     local ts file proj id note
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
-    note=${ARGS[*]:-}
+    # an explicit task id (T#) targets that task; otherwise the running one. A
+    # qualified teammate id (alice/T#) is read-only, like the other mutators.
+    if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; note=${ARGS[*]:1}
+        task_exists "$file" "$id" || die "no such task today: $id"
+    else id=$(find_task "$file" active "$proj"); note=${ARGS[*]:-}; fi
     [[ -n $note ]] || die "log needs a note"
-    id=$(find_task "$file" active "$proj")
-    [[ -n $id ]] || die "no active task to log against"
+    [[ -n $id ]] || die "no active task to log against (give a task id)"
     append_event "$ts" "$id" "$(task_project "$file" "$id")" log "$note"
     printf '%s  %s  note added\n' "$id" "${ts:11:5}"
 }
@@ -1980,7 +1983,7 @@ _wj() {
     if [[ $cur == -* ]]; then COMPREPLY=( $(compgen -W "$flags" -- "$cur") ); return; fi
     cmd=${COMP_WORDS[1]}
     case $cmd in
-        continue|pause|resume|complete|defer|amend|move|cancel|show)
+        continue|pause|resume|complete|defer|amend|move|cancel|show|log)
             COMPREPLY=( $(compgen -W "$(wj _tasks 2>/dev/null)" -- "$cur") ) ;;
         tag|untag)
             if (( COMP_CWORD >= 3 )); then
@@ -2035,7 +2038,8 @@ TASK COMMANDS
                       project's other running task first.
   complete [id]       Finish a task and sum its tracked time.
   defer  [id] [why]   Set a task aside (e.g. blocked / picking it up another day).
-  log <note>          Attach a timestamped note to the running task.
+  log <[id] note>     Attach a timestamped note to a task (the running one, or
+                      the given T# id).
   amend [id] <desc>   Replace a task's description (running task, or given id).
                       Keeps history: appends an event, never rewrites the log.
   move  [id] <proj>   Re-home a task to another project (fix wrong auto-detection).

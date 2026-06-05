@@ -161,7 +161,7 @@ First run seeds a config file at `~/.config/wj/cfg`. Data is written under
 | `wj resume [id]` | Resume the most-recent paused/deferred task (or a given id). |
 | `wj complete [id]` | Finish a task and sum its tracked time. |
 | `wj defer [id] [why]` | Set a task aside (blocked, or for another day). |
-| `wj log <note>` | Attach a timestamped note to the running task. |
+| `wj log [id] <note>` | Attach a timestamped note to a task — the running one, or the given `T#` id. |
 | `wj amend [id] <desc>` | Replace a task's description (running task, or a given id). Appends an event — history is never rewritten. |
 | `wj move [id] <proj>` | Re-home a task to another project (fix wrong auto-detection). |
 | `wj tag <id> <tag…>` | Add one or more free-form labels to a task — a cross-cutting axis beside its project. Normalized (lowercased; a leading `#` and spaces stripped, so `"High Priority"` → `high-priority`). Matched by `search`, aggregated by `report --by tag`. |

@@ -58,8 +58,14 @@ Finish a task and sum its tracked time.
 .BI "defer " "[id] [why]"
 Set a task aside (blocked, or to pick up another day).
 .TP
-.BI "log " note
-Attach a timestamped note to the running task.
+.BI "log " "[id] note"
+Attach a timestamped note to a task. With no id it targets the running task (use
+.B --project
+to pick one when several run in parallel); given a task id
+.RI ( T# )
+it notes against that task instead. The note joins the task's timeline
+.RB ( "show " id ),
+it is not a state change.
 .TP
 .BI "amend " "[id] desc"
 Replace a task's description (running task, or given id). Appends an event;
