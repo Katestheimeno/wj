@@ -319,14 +319,18 @@ disp_id() { local a; a=$(cur_actor); case $1 in "$a"/*) printf '%s' "${1#"$a"/}"
 # No sort: each file's events stay in append order, and distinct authors' tasks
 # never interact, so single-author output is byte-identical to the old layout.
 day_stream() {
-    local d=$1 dir base f actor
+    local d=$1 dir base f fn act       # NB: not "actor" — that's the config var cur_actor reads
     dir="$WJ_DATA_DIR/${d:0:4}/${d:5:2}"; base="${d:8:2}"
     [[ -d $dir ]] || return 0
     for f in "$dir/$base.tsv" "$dir/$base".*.tsv; do
         [[ -f $f ]] || continue
-        actor=${f##*/}; actor=${actor#"$base"}; actor=${actor#.}; actor=${actor%.tsv}
-        [[ -n $actor ]] || actor=$(cur_actor)        # legacy DD.tsv -> me
-        awk -v a="$actor" -F'\t' 'BEGIN{OFS="\t"} NF>=2{$2=a"/"$2} {print}' "$f"
+        fn=${f##*/}
+        if [[ $fn == "$base.tsv" ]]; then
+            act=$(cur_actor)                          # legacy DD.tsv -> me
+        else
+            act=${fn#"$base."}; act=${act%.tsv}        # DD.<actor>.tsv -> actor
+        fi
+        awk -v a="$act" -F'\t' 'BEGIN{OFS="\t"} NF>=2{$2=a"/"$2} {print}' "$f"
     done
 }
 
@@ -994,7 +998,8 @@ cmd_ls() {
 cmd_show() {
     local d=${ON:-$TODAY} id=${ARGS[0]:-} file
     [[ -n $id ]] || die "show needs a task id (e.g. wj show T2)"
-    [[ $id =~ ^T[0-9]+$ ]] || die "not a task id: $id"
+    # accept a bare T# (yours) or a qualified actor/T# (a teammate's, read-only)
+    [[ $id =~ ^([a-z0-9-]+/)?T[0-9]+$ ]] || die "not a task id: $id"
     file=$(day_file "$d")
     task_exists "$file" "$id" || die "no such task on $d: $id"
     local nm; nm=$(report_nm "$d" "$file")

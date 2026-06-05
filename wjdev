@@ -171,7 +171,29 @@ seed_data() {
     "$WJ" lower P1 >/dev/null
     "$WJ" due   P3 "$(date -d "$today +1 day" +%Y-%m-%d)" >/dev/null   # …and nudge a deadline
 
-    note "seeded $processed past days + a live today + 5 pending in $WJ_DATA_DIR"
+    # --- a teammate's work (a second author) so the collaborative/union views
+    # have multiple people. Written under actor=<mate> into the SAME data dir;
+    # reads union both. Skip with WJDEV_NO_MATE=1; rename with WJDEV_MATE=name.
+    if [[ -z "${WJDEV_NO_MATE:-}" ]]; then
+        local mate mate_cfg yd
+        mate=${WJDEV_MATE:-alex}
+        mate_cfg=$(mktemp)
+        cp "$WJ_CONFIG" "$mate_cfg" 2>/dev/null || "$WJ" config >/dev/null
+        printf '\nactor = %s\n' "$mate" >> "$mate_cfg"
+        WJ_CONFIG=$mate_cfg "$WJ" start "review the caching RFC"  --project docs    --at "$(ago 245)" >/dev/null
+        WJ_CONFIG=$mate_cfg "$WJ" complete T1                                        --at "$(ago 185)" >/dev/null
+        WJ_CONFIG=$mate_cfg "$WJ" start "pair on the db migration" --project backend --at "$(ago 150)" >/dev/null
+        WJ_CONFIG=$mate_cfg "$WJ" tag   T2 migration                                 --at "$(ago 145)" >/dev/null
+        WJ_CONFIG=$mate_cfg "$WJ" pause T2 "lunch"                                   --at "$(ago 60)"  >/dev/null
+        WJ_CONFIG=$mate_cfg "$WJ" start "on-call triage"          --project ops      --at "$(ago 40)"  >/dev/null
+        yd=$(date -d "$today -1 day" +%Y-%m-%d)
+        WJ_CONFIG=$mate_cfg "$WJ" start "incident write-up" --project ops --date "$yd" --at 14:00 >/dev/null
+        WJ_CONFIG=$mate_cfg "$WJ" complete T1                                --date "$yd" --at 15:30 >/dev/null
+        rm -f "$mate_cfg"
+        note "seeded $processed past days + a live today + 5 pending + teammate '$mate' in $WJ_DATA_DIR"
+    else
+        note "seeded $processed past days + a live today + 5 pending in $WJ_DATA_DIR"
+    fi
 }
 
 case "${1:-}" in
