@@ -30,6 +30,8 @@ slot_minutes=5          # the configurable "jump"
 round="down"            # down | nearest   (grid snapping only)
 totals="exact"          # exact | slot     (how time totals are summed)
 default_project="admin" # used outside a git repo when no --project given
+actor=""                # author handle for a shared/collaborative log (empty =
+                        # derive from git user.email, then $USER). Normalized.
 interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui front-end
 auto_pause="off"        # on | off — on start/resume, auto-pause a running task in
                         # the SAME project. off = run them in parallel (default)
@@ -71,7 +73,7 @@ self_path() {
 # every recognised key (a whitelist: the parser ignores anything else, so a
 # config file can neither inject arbitrary shell variables nor run commands —
 # unlike the old `source`-the-file approach).
-_CFG_KEYS=" shift_start shift_end slot_minutes round totals default_project \
+_CFG_KEYS=" shift_start shift_end slot_minutes round totals default_project actor \
 auto_pause interface accent layout sidebar confirm icons layout_sidebar layout_split \
 color_projects color_tasks color_pending color_range color_day color_timeline "
 
@@ -97,6 +99,9 @@ totals       = $totals          # exact | slot
 auto_pause = $auto_pause        # on | off  (override: --parallel / --auto-pause)
 # Project used outside a git repo when no --project is given.
 default_project = $default_project
+# Author handle stamped on events in a shared/collaborative log (see the git-sync
+# workflow). Empty = derive from git user.email, then \$USER. Normalized to a-z0-9-.
+actor = $actor
 
 [ui]
 # Front-end for bare \`wj\`: minimal (today's status table) | ui (the wj-tui app).
@@ -278,9 +283,70 @@ detect_project() {
 }
 
 # day file path for a YYYY-MM-DD date
+# day_file is the *canonical* path for a day — used as the replay cache key and
+# passed to read helpers as a day handle. The real on-disk files are per-author
+# (DD.<actor>.tsv); writes go to day_actor_file, reads union every DD*.tsv.
 day_file() {
     local d=$1
     printf '%s/%s/%s/%s.tsv' "$WJ_DATA_DIR" "${d:0:4}" "${d:5:2}" "${d:8:2}"
+}
+
+# the current author's write file for a day: DD.<actor>.tsv
+day_actor_file() {
+    local d=$1
+    printf '%s/%s/%s/%s.%s.tsv' "$WJ_DATA_DIR" "${d:0:4}" "${d:5:2}" "${d:8:2}" "$(cur_actor)"
+}
+
+# recover YYYY-MM-DD from a day_file / actor-file path
+file_day() {
+    local p=${1%.tsv} dd mm yyyy
+    dd=${p##*/}; dd=${dd%%.*}; p=${p%/*}
+    mm=${p##*/}; p=${p%/*}
+    yyyy=${p##*/}
+    printf '%s-%s-%s' "$yyyy" "$mm" "$dd"
+}
+
+# qualify a task id for replay lookups: a bare T# belongs to the current actor;
+# an already-qualified "actor/T#" passes through unchanged.
+qkey() { case $1 in */*) printf '%s' "$1" ;; *) printf '%s/%s' "$(cur_actor)" "$1" ;; esac; }
+
+# display form of a qualified id: bare "T#" for your own tasks, "actor/T#" for
+# others. So single-author output reads exactly like the old layout.
+disp_id() { local a; a=$(cur_actor); case $1 in "$a"/*) printf '%s' "${1#"$a"/}" ;; *) printf '%s' "$1" ;; esac; }
+
+# day_stream emits every event for a day from all authors' files, with the id
+# qualified as "<actor>/<id>" (legacy DD.tsv is attributed to the current actor).
+# No sort: each file's events stay in append order, and distinct authors' tasks
+# never interact, so single-author output is byte-identical to the old layout.
+day_stream() {
+    local d=$1 dir base f actor
+    dir="$WJ_DATA_DIR/${d:0:4}/${d:5:2}"; base="${d:8:2}"
+    [[ -d $dir ]] || return 0
+    for f in "$dir/$base.tsv" "$dir/$base".*.tsv; do
+        [[ -f $f ]] || continue
+        actor=${f##*/}; actor=${actor#"$base"}; actor=${actor#.}; actor=${actor%.tsv}
+        [[ -n $actor ]] || actor=$(cur_actor)        # legacy DD.tsv -> me
+        awk -v a="$actor" -F'\t' 'BEGIN{OFS="\t"} NF>=2{$2=a"/"$2} {print}' "$f"
+    done
+}
+
+# whether a day has any events from any author (cheap glob check, no read)
+day_has_events() {
+    local d=$1 dir base
+    dir="$WJ_DATA_DIR/${d:0:4}/${d:5:2}"; base="${d:8:2}"
+    compgen -G "$dir/$base.tsv" >/dev/null 2>&1 || compgen -G "$dir/$base.*.tsv" >/dev/null 2>&1
+}
+
+# actor_stream emits just the current author's raw events for a day (bare ids),
+# from the legacy DD.tsv and DD.<actor>.tsv — used by the write-side helpers
+# (next id, find-my-running-task, my last event time).
+actor_stream() {
+    local d=$1 dir base a f
+    dir="$WJ_DATA_DIR/${d:0:4}/${d:5:2}"; base="${d:8:2}"; a=$(cur_actor)
+    [[ -d $dir ]] || return 0
+    for f in "$dir/$base.tsv" "$dir/$base.$a.tsv"; do
+        [[ -f $f ]] && cat "$f"
+    done
 }
 
 # the backlog file of pending (not-yet-started) tasks. Unlike the day logs this
@@ -306,7 +372,7 @@ sanitize() { local v=${1//[$'\t\r\n']/ }; printf '%s' "$v"; }
 append_event() {
     local ts=$1 id=$2 proj=$3 evt=$4 note=${5:-} file
     proj=$(sanitize "$proj"); note=$(sanitize "$note")
-    file=$(day_file "${ts:0:10}")
+    file=$(day_actor_file "${ts:0:10}")     # author-partitioned write file
     mkdir -p "$(dirname "$file")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$id" "$proj" "$evt" "$note" >>"$file"
     _R_FILE="__stale__"   # invalidate the replay cache: the log just changed
@@ -352,8 +418,8 @@ replay_day() {
     [[ $_R_FILE == "$file" ]] && return 0
     _R_FILE=$file
     _R_DESC=(); _R_PROJ=(); _R_STATUS=(); _R_CANCEL=(); _R_CLOSED=(); _R_OPEN=(); _R_ACTIVE=(); _R_SEEN=(); _R_TAGS=(); _R_IDS=()
-    [[ -f $file ]] || return 0
     local ts id proj evt note hh mm m t x newt
+    # union every author's events for the day; ids arrive qualified as actor/id.
     while IFS=$'\t' read -r ts id proj evt note; do
         [[ -n $id ]] || continue
         if [[ -z ${_R_SEEN[$id]:-} ]]; then
@@ -387,35 +453,35 @@ replay_day() {
             cancel)
                 _R_STATUS[$id]=cancelled; _R_CANCEL[$id]=1; _R_ACTIVE[$id]=0 ;;
         esac
-    done <"$file"
+    done < <(day_stream "$(file_day "$file")")
     return 0
 }
 
-# highest existing T# in a day file (0 if none)
+# highest existing T# among the *current author's* tasks for a day (0 if none) —
+# the next id is per-author, so this scans only your own events.
 max_task_id() {
-    local file=$1 ts id rest n max=0
-    [[ -f $file ]] || { echo 0; return; }
+    local ts id rest n max=0
     while IFS=$'\t' read -r ts id rest; do
         n=${id#T}
         [[ $n =~ ^[0-9]+$ ]] && (( n > max )) && max=$n
-    done <"$file"
+    done < <(actor_stream "$(file_day "$1")")
     echo "$max"
 }
 
 # a task's description: its `start` note, overridden by the latest `amend`
-task_desc() { replay_day "$1"; printf '%s' "${_R_DESC[$2]:-}"; }
+task_desc() { replay_day "$1"; printf '%s' "${_R_DESC[$(qkey "$2")]:-}"; }
 
 # a task's project: its `start` project, overridden by the latest `move`
-task_project() { replay_day "$1"; printf '%s' "${_R_PROJ[$2]:-}"; }
+task_project() { replay_day "$1"; printf '%s' "${_R_PROJ[$(qkey "$2")]:-}"; }
 
 # a task's current tags (space-separated, set-union of tag minus untag events)
-task_tags() { replay_day "$1"; printf '%s' "${_R_TAGS[$2]:-}"; }
+task_tags() { replay_day "$1"; printf '%s' "${_R_TAGS[$(qkey "$2")]:-}"; }
 
 # whether a task has been cancelled (voided)
-task_cancelled() { replay_day "$1"; [[ ${_R_CANCEL[$2]:-0} == 1 ]]; }
+task_cancelled() { replay_day "$1"; [[ ${_R_CANCEL[$(qkey "$2")]:-0} == 1 ]]; }
 
 # current status of a task by last status-affecting event
-task_status() { replay_day "$1"; printf '%s' "${_R_STATUS[$2]:-}"; }
+task_status() { replay_day "$1"; printf '%s' "${_R_STATUS[$(qkey "$2")]:-}"; }
 
 # true if task $2 in file $1 is already in status $3. Used to keep the
 # state-changing actions idempotent: repeating an action whose target state
@@ -423,16 +489,18 @@ task_status() { replay_day "$1"; printf '%s' "${_R_STATUS[$2]:-}"; }
 # appends nothing and is a no-op.
 in_status() { [[ "$(task_status "$1" "$2")" == "$3" ]]; }
 
-# distinct task ids in a day file, in first-seen (numeric) order
+# distinct task ids in a day (qualified actor/id), in first-seen order across the
+# union of authors. Derived from the replay so it matches every other view.
 task_ids() {
-    local file=$1 ts id rest
-    [[ -f $file ]] || return 0
-    awk -F'\t' '!seen[$2]++ {print $2}' "$file"
+    replay_day "$1"
+    local id
+    for id in "${_R_IDS[@]}"; do printf '%s\n' "$(disp_id "$id")"; done
 }
 
 # total active minutes for a task; arg3 = now-minute (cap for open intervals)
 task_minutes() {
-    local file=$1 want=$2 now_min=$3 total slot=$slot_minutes
+    local file=$1 want now_min=$3 total slot=$slot_minutes
+    want=$(qkey "$2")
     replay_day "$file"
     [[ -n ${_R_SEEN[$want]:-} ]] || { printf '0'; return; }
     (( ${_R_CANCEL[$want]} )) && { printf '0'; return; }
@@ -445,10 +513,10 @@ task_minutes() {
     printf '%d' "$total"
 }
 
-# whether a task id appears in a day file
+# whether a task id appears in a day
 task_exists() {
     replay_day "$1"
-    [[ -n ${_R_SEEN[$2]:-} ]]
+    [[ -n ${_R_SEEN[$(qkey "$2")]:-} ]]
 }
 
 # --- grid window & open-interval cap ----------------------------------------
@@ -465,15 +533,14 @@ ceil_hour()  { printf '%d' "$(( ($1 + 59) / 60 * 60 ))"; }
 # as "lo hi" (nothing when the day has no such events).
 day_span() {
     local file=$1 ts id proj evt note m lo="" hi=""
-    [[ -f $file ]] || return 0
-    replay_day "$file"
+    replay_day "$file"   # populates _R_CANCEL (keyed by qualified id)
     while IFS=$'\t' read -r ts id proj evt note; do
         [[ -n $id ]] || continue
         (( ${_R_CANCEL[$id]:-0} )) && continue
         m=$(( 10#${ts:11:2} * 60 + 10#${ts:14:2} ))
         [[ -z $lo || $m -lt $lo ]] && lo=$m
         [[ -z $hi || $m -gt $hi ]] && hi=$m
-    done <"$file"
+    done < <(day_stream "$(file_day "$file")")
     [[ -n $lo ]] && printf '%d %d' "$lo" "$hi"
 }
 
@@ -525,8 +592,8 @@ autopause_on() {
 
 find_task() {
     local file=$1 mode=$2 proj=$3 ts id p evt note seq=0
-    [[ -f $file ]] || return 0
     declare -A status=() lastseq=() pproj=()
+    # only the current author's own tasks (you pause/resume your own), bare ids
     while IFS=$'\t' read -r ts id p evt note; do
         # move re-homes the task's project without being a state transition
         [[ $evt == move ]] && { pproj[$id]=$p; continue; }
@@ -539,7 +606,7 @@ find_task() {
             *)            continue ;;
         esac
         seq=$(( seq + 1 )); lastseq[$id]=$seq; pproj[$id]=$p
-    done <"$file"
+    done < <(actor_stream "$(file_day "$file")")
     local best="" bestseq=-1 k ok
     for k in "${!status[@]}"; do
         ok=0
@@ -602,11 +669,10 @@ TODAY=$(date +%Y-%m-%d)
 
 # last event's HH:MM in a day file ("" if none)
 last_event_time() {
-    local file=$1 ts rest last=""
-    [[ -f $file ]] || return 0
+    local ts rest last=""
     while IFS=$'\t' read -r ts rest; do
         [[ -n $ts ]] && last=${ts:11:5}
-    done <"$file"
+    done < <(actor_stream "$(file_day "$1")")
     printf '%s' "$last"
 }
 
@@ -630,6 +696,25 @@ now_ts()  { printf '%sT%s' "${ON:-$TODAY}" "$(eff_time)"; }
 now_min() { hm_to_min "$(eff_time)"; }
 cur_project() {
     if [[ -n $PROJECT_OVERRIDE ]]; then printf '%s' "$PROJECT_OVERRIDE"; else detect_project; fi
+}
+
+# cur_actor is the author handle for collaborative logs: the configured `actor`,
+# else the local-part of git user.email, else $USER, else "me". Normalized to
+# a-z0-9- (so it's safe as a filename suffix and an id qualifier). Memoized.
+_ACTOR=""
+cur_actor() {
+    [[ -n $_ACTOR ]] && { printf '%s' "$_ACTOR"; return; }
+    local a=$actor
+    [[ -n $a ]] || a=$(git config user.email 2>/dev/null || true)
+    [[ -n $a ]] || a=${USER:-}
+    a=${a%@*}                                  # email local-part, if any
+    a=${a,,}
+    a=${a//[^a-z0-9-]/-}                        # filename/id-safe
+    while [[ $a == *--* ]]; do a=${a//--/-}; done
+    a=${a#-}; a=${a%-}
+    [[ -n $a ]] || a=me
+    _ACTOR=$a
+    printf '%s' "$a"
 }
 
 # build the wj-tui -colors value from the configured per-panel colors, skipping
@@ -833,7 +918,7 @@ cmd_cancel() {
 # two events (a start + a lineage note), so undoing it takes two presses.
 cmd_undo() {
     local d=${ON:-$TODAY} file last ts id proj evt note tmp
-    file=$(day_file "$d")
+    file=$(day_actor_file "$d")   # undo your own last event (your write file)
     [[ -s $file ]] || die "nothing to undo on $d"
     last=$(tail -n 1 "$file")
     [[ -n $last ]] || die "nothing to undo on $d"
@@ -884,7 +969,7 @@ cmd_ls() {
     local found=0 dd file id nm st p mins desc
     for dd in "${dates[@]}"; do
         file=$(day_file "$dd")
-        [[ -f $file ]] || continue
+        day_has_events "$dd" || continue
         nm=$(report_nm "$dd" "$file")
         while read -r id; do
             [[ -z $id ]] && continue
@@ -922,9 +1007,9 @@ cmd_show() {
     printf '\n%s  [%s]  %s\n' "$id" "$proj" "$desc"
     printf '%s · %s · %s\n\n' "$d" "$st" "$(fmt_dur "$mins")"
     printf 'TIMELINE\n'
-    local ts xid xp evt note t label extra
+    local ts xid xp evt note t label extra want; want=$(qkey "$id")
     while IFS=$'\t' read -r ts xid xp evt note; do
-        [[ $xid == "$id" ]] || continue
+        [[ $xid == "$want" ]] || continue
         t=${ts:11:5}; extra=""
         case $evt in
             start)    label=started;   extra=$note ;;
@@ -939,7 +1024,7 @@ cmd_show() {
             *)        continue ;;
         esac
         printf '  %s  %-9s  %s\n' "$t" "$label" "$extra"
-    done <"$file"
+    done < <(day_stream "$(file_day "$file")")
     printf '\n'
 }
 
@@ -948,7 +1033,7 @@ cmd_status() {
     file=$(day_file "$d")
     nm=$(report_nm "$d" "$file")
     (( JSON )) && { json_status "$d" "$file" "$nm"; return; }
-    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
+    day_has_events "$d" || { printf 'No tasks for %s\n' "$d"; return; }
     printf '\nTasks — %s\n\n' "$d"
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ID PROJECT STATUS TIME DESCRIPTION
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ---- ---------------- ------------ ------- -----------
@@ -980,7 +1065,7 @@ cmd_grid() {
     nm=$(report_nm "$d" "$file")
     read -r start end < <(grid_window "$file" "$nm")
     (( JSON )) && { json_grid "$d" "$file" "$nm" "$start" "$end"; return; }
-    [[ -f $file ]] || { printf 'No tasks for %s\n' "$d"; return; }
+    day_has_events "$d" || { printf 'No tasks for %s\n' "$d"; return; }
 
     # collect ids (cancelled tasks are voided — omit them)
     local -a ids=()
@@ -993,11 +1078,12 @@ cmd_grid() {
 
     # build cell map  CELL[id:slotmin]=symbol
     declare -A CELL=()
-    local id
+    local id want
     for id in "${ids[@]}"; do
         local ts xid proj evt note m active=0 open=0 s
+        want=$(qkey "$id")
         while IFS=$'\t' read -r ts xid proj evt note; do
-            [[ $xid == "$id" ]] || continue
+            [[ $xid == "$want" ]] || continue
             m=$(snap_min "$(hm_to_min "${ts:11:5}")" "$start" "$slot")
             case $evt in
                 start|resume) (( active )) || { active=1; open=$m; } ;;
@@ -1008,7 +1094,7 @@ cmd_grid() {
                     fi
                     case $evt in pause) CELL[$id:$m]='--';; complete) CELL[$id:$m]='**';; defer) CELL[$id:$m]='~~';; esac ;;
             esac
-        done <"$file"
+        done < <(day_stream "$(file_day "$file")")
         if (( active )); then
             local cap; cap=$(snap_min "$nm" "$start" "$slot")
             for (( s=open; s<=cap; s+=slot )); do CELL[$id:$s]='>>'; done
@@ -1051,7 +1137,7 @@ cmd_report() {
     local d file id nm key mins t tags
     while read -r d; do
         file=$(day_file "$d")
-        [[ -f $file ]] || continue
+        day_has_events "$d" || continue
         nm=$(report_nm "$d" "$file")
         while read -r id; do
             [[ -z $id ]] && continue
@@ -1125,7 +1211,7 @@ json_status() {
     local d=$1 file=$2 nm=$3
     printf '{"date":%s,"now":%s,"tasks":[' "$(json_str "$d")" "$(json_str "$(min_to_hm "$nm")")"
     local first=1 id p st mins desc tot=0
-    if [[ -f $file ]]; then
+    if day_has_events "$d"; then
         while read -r id; do
             [[ -z $id ]] && continue
             task_cancelled "$file" "$id" && continue
@@ -1148,20 +1234,21 @@ json_show() {
         "$(json_str "$id")" "$(json_str "$d")" "$(json_str "$(task_project "$file" "$id")")" \
         "$(json_str "$(task_status "$file" "$id")")" "$(json_str "$(task_desc "$file" "$id")")" \
         "$(task_minutes "$file" "$id" "$nm")" "$(json_arr "$(task_tags "$file" "$id")")"
-    local first=1 ts xid xp evt note
+    local first=1 ts xid xp evt note want; want=$(qkey "$id")
     while IFS=$'\t' read -r ts xid xp evt note; do
-        [[ $xid == "$id" ]] || continue
+        [[ $xid == "$want" ]] || continue
         (( first )) && first=0 || printf ','
         printf '{"time":%s,"event":%s,"project":%s,"note":%s}' \
             "$(json_str "${ts:11:5}")" "$(json_str "$evt")" "$(json_str "$xp")" "$(json_str "$note")"
-    done <"$file"
+    done < <(day_stream "$(file_day "$file")")
     printf ']}\n'
 }
 
 # a task's active intervals as JSON segments. `to` of an ongoing interval is
 # capped at `nm`; `state` records how the interval ended (or "active" if open).
 json_segments() {
-    local file=$1 want=$2 nm=$3
+    local file=$1 want nm=$3
+    want=$(qkey "$2")
     local ts id proj evt note m active=0 open=0 first=1
     printf '['
     while IFS=$'\t' read -r ts id proj evt note; do
@@ -1178,7 +1265,7 @@ json_segments() {
                 fi ;;
             cancel) active=0 ;;
         esac
-    done <"$file"
+    done < <(day_stream "$(file_day "$file")")
     # ongoing interval: only emit a positive-duration bar (open may exceed nm
     # for a task back-dated past the cap, which task_minutes clamps to 0 too)
     if (( active && open < nm )); then
@@ -1199,7 +1286,7 @@ json_grid() {
         "$(json_str "$d")" "$(json_str "$(min_to_hm "$start")")" "$(json_str "$(min_to_hm "$end")")" \
         "$slot_minutes" "$(json_str "$(min_to_hm "$nm")")"
     local first=1 id
-    if [[ -f $file ]]; then
+    if day_has_events "$d"; then
         while read -r id; do
             [[ -z $id ]] && continue
             task_cancelled "$file" "$id" && continue
@@ -1231,7 +1318,7 @@ cmd_gantt() {
     local file id nm key lbl proj m
     for d in "${days[@]}"; do
         file=$(day_file "$d")
-        [[ -f $file ]] || continue
+        day_has_events "$d" || continue
         nm=$(report_nm "$d" "$file")
         while read -r id; do
             [[ -z $id ]] && continue
@@ -1447,25 +1534,28 @@ cmd_search() {
     local first=1 found=0
 
     if [[ -d $WJ_DATA_DIR ]]; then
-        local file base dd mm yyyy d id proj desc st mins nm hay tags
+        local file base dd mm yyyy d df id proj desc st mins nm hay tags
+        declare -A seen_day=()
         while IFS= read -r file; do
             base=${file%.tsv}
-            dd=${base##*/};   base=${base%/*}
-            mm=${base##*/};   base=${base%/*}
+            dd=${base##*/}; dd=${dd%%.*};  base=${base%/*}   # strip the .<actor> suffix
+            mm=${base##*/};                base=${base%/*}
             yyyy=${base##*/}
             [[ $yyyy =~ ^[0-9]{4}$ && $mm =~ ^[0-9]{2}$ && $dd =~ ^[0-9]{2}$ ]] || continue
             d="$yyyy-$mm-$dd"
-            nm=$(report_nm "$d" "$file")
+            [[ -n ${seen_day[$d]:-} ]] && continue; seen_day[$d]=1   # each day once (union)
+            df=$(day_file "$d")
+            nm=$(report_nm "$d" "$df")
             while read -r id; do
                 [[ -z $id ]] && continue
-                task_cancelled "$file" "$id" && continue
-                proj=$(task_project "$file" "$id")
-                desc=$(task_desc "$file" "$id")
-                tags=$(task_tags "$file" "$id")
+                task_cancelled "$df" "$id" && continue
+                proj=$(task_project "$df" "$id")
+                desc=$(task_desc "$df" "$id")
+                tags=$(task_tags "$df" "$id")
                 hay="$id $proj $desc $tags"
                 [[ -z $ql || ${hay,,} == *"$ql"* ]] || continue
-                st=$(task_status "$file" "$id")
-                mins=$(task_minutes "$file" "$id" "$nm")
+                st=$(task_status "$df" "$id")
+                mins=$(task_minutes "$df" "$id" "$nm")
                 found=1
                 if (( JSON )); then
                     (( first )) && first=0 || printf ','
@@ -1476,7 +1566,7 @@ cmd_search() {
                     printf '%-12s  %-4s  %-16.16s  %-8s  %7s  %s\n' \
                         "$d" "$id" "$proj" "$st" "$(fmt_dur "$mins")" "$desc"
                 fi
-            done < <(task_ids "$file")
+            done < <(task_ids "$df")
         done < <(find "$WJ_DATA_DIR" -name '*.tsv' -type f 2>/dev/null | sort -r)
     fi
 
@@ -1493,9 +1583,8 @@ cmd_export() {
     esac
     local first=1 ts id proj evt note
     while read -r d; do
-        file=$(day_file "$d")
-        [[ -f $file ]] || continue
         while IFS=$'\t' read -r ts id proj evt note; do
+            [[ -n $ts ]] || continue
             case $FORMAT in
                 tsv)  printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$id" "$proj" "$evt" "$note" ;;
                 csv)  printf '%s,%s,%s,%s,%s\n' \
@@ -1507,7 +1596,7 @@ cmd_export() {
                         "$(json_str "$ts")" "$(json_str "$id")" "$(json_str "$proj")" \
                         "$(json_str "$evt")" "$(json_str "$note")" ;;
             esac
-        done <"$file"
+        done < <(day_stream "$d")
     done < <(iter_dates "$from" "$to")
     # `if`, not `&&`: as the last statement, `[[..]] && {..}` would return 1
     # for csv/tsv (non-json), making a successful export exit non-zero.
@@ -1844,6 +1933,7 @@ main() {
         _pending) list_pending_ids ;;
         _projects) list_projects ;;
         _tags)    list_tags ;;
+        _actor)   printf '%s\n' "$(cur_actor)" ;;
         help|-h|--help) cmd_help ;;
         *)        die "unknown command: $cmd (try 'wj help')" ;;
     esac
