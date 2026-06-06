@@ -1,0 +1,117 @@
+# =============================================================================
+# wj configuration — reference
+# =============================================================================
+# Copy this to your config file and edit. wj already writes a seeded config on
+# first run; this file documents EVERY key with its accepted values and default,
+# so you only need to keep the lines you actually want to change.
+#
+#   Location:  ~/.config/wj/cfg          (override with $WJ_CONFIG)
+#   Find it:   wj config                 (prints the active path)
+#
+# Format: INI — [section] headers, then "key = value". '#' starts a comment;
+# blank lines are ignored. A leading-'#' VALUE (e.g. a #hex color) is preserved.
+# The file is PARSED, never executed: unknown keys are ignored, and no value can
+# inject shell. Values below are the defaults.
+# =============================================================================
+
+
+[tracking]
+# -----------------------------------------------------------------------------
+# Where your time data lives and how it's measured. (Data dir: ~/.local/share/wj,
+# override with $WJ_DATA_DIR.)
+# -----------------------------------------------------------------------------
+
+# Working-day bounds that frame the grid/gantt time axis. The axis auto-expands
+# to include any work tracked outside these hours, so nothing is ever clipped.
+# COMMENT BOTH OUT (or leave empty) to drop the fixed frame entirely — the grid
+# then auto-fits to each day's real first/last activity.
+shift_start = 09:00
+shift_end   = 19:00
+
+# Grid slot size in minutes — the "jump" the schedule grid is drawn in.
+slot_minutes = 5
+
+# How an event time snaps onto the grid:
+#   down    — snap back to the slot it falls in (default)
+#   nearest — snap to the closest slot edge
+round = down
+
+# How tracked time is summed in tables/reports:
+#   exact — true minute math (default)
+#   slot  — count whole occupied slots (rounds partial slots up)
+totals = exact
+
+# On `start`/`resume`, auto-pause another running task in the SAME project
+# (one in-progress task per project). off = run them in parallel (default).
+# Override per command with --auto-pause / --parallel.
+auto_pause = off
+
+# Project name used when you're outside a git repo and pass no --project.
+default_project = admin
+
+# COLLABORATION: the author handle stamped on your events in a shared journal
+# (see `wj sync`). EMPTY = derive automatically: git user.email's local-part,
+# then $USER, then "me". Normalized to a-z0-9- (e.g. "Jane.Doe" -> "jane-doe").
+# Pin an explicit handle for a stable identity, and make sure each teammate's is
+# UNIQUE — it seeds your per-author filenames (DD.<actor>.tsv).
+#   actor = jane
+actor =
+
+
+[ui]
+# -----------------------------------------------------------------------------
+# The optional wj-tui front-end (launched by `wj ui`, or a bare `wj` when
+# interface = ui). These keys have no effect on the plain CLI.
+# -----------------------------------------------------------------------------
+
+# What a bare `wj` does:
+#   minimal — print today's status table (default)
+#   ui      — launch the wj-tui app
+interface = minimal
+
+# Focused-panel border/header color. Any of: a 256-color code (141), a #hex
+# (#af87ff), or an ANSI name (purple). Same format applies to all colors below.
+accent = 141
+
+# Panel arrangement: balanced | spotlight | golden | custom.
+# Shift+L cycles them live; z zooms the focused panel full-screen.
+layout = balanced
+
+# Which side the lists column (Projects/Tasks/Pending) sits on: left | right.
+sidebar = left
+
+# y/n confirmation guard before an action in the TUI:
+#   all         — guard every mutating action
+#   destructive — guard only cancel/void and pending drop (default)
+#   off         — no guard ('u' undo is the safety net)
+confirm = destructive
+
+# Status markers in the TUI:
+#   on  — Nerd-Font icons (needs a patched font)
+#   off — universal ASCII set: > running, = paused, » deferred, x done (default)
+icons = off
+
+# COLLABORATION: background sync interval in minutes — how often the TUI runs
+# `wj sync` (pull others' work + push yours) on its own. 0 or "off" disables it,
+# leaving the manual `S` key. Only acts once the data dir is a sync repo
+# (`wj sync init`); on a non-shared journal it does nothing.
+auto_sync = 5
+
+# Proportions for layout = custom (ignored otherwise):
+#   layout_sidebar — sidebar width as a percent, e.g. 28
+#   layout_split   — panel weights "focused,hi,lo", e.g. 60,25,15
+layout_sidebar =
+layout_split   =
+
+
+[colors]
+# -----------------------------------------------------------------------------
+# Per-panel title colors in the TUI — one each, so the panels stay distinct.
+# Same value formats as `accent` (256-code | #hex | ANSI name).
+# -----------------------------------------------------------------------------
+color_projects = 39     # blue
+color_tasks    = 214    # amber
+color_pending  = 170    # orchid
+color_range    = 78     # green
+color_day      = 45     # cyan
+color_timeline = 180    # tan

@@ -295,6 +295,11 @@ value like a hex color is kept). A legacy `~/.config/wj/config` from an older
 version is migrated to `cfg` automatically on first run (the original is kept as
 `config.bak`).
 
+A fully-commented reference listing every key — with its accepted values and
+default — ships as [`wj.cfg.example`](wj.cfg.example) (installed at
+`<prefix>/share/doc/wj/wj.cfg.example`). Copy it over and trim what you don't
+need: `cp wj.cfg.example "$(wj config)"`. The keys are also summarized below.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `shift_start` / `shift_end` | `09:00` / `19:00` | Default grid/gantt frame. The window auto-expands to fit any work tracked outside it; **comment either line out** (or leave it empty) to drop the fixed frame and auto-fit the grid to each day (e.g. a full 24h). |

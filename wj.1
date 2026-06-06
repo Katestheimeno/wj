@@ -382,6 +382,11 @@ and
 .I ~/.config/wj/cfg
 Settings, INI format (override with \fB$WJ_CONFIG\fR).
 .TP
+.I <prefix>/share/doc/wj/wj.cfg.example
+A fully-commented reference config listing every key with its values and
+default. Copy it over to start from a documented baseline:
+.B cp wj.cfg.example "$(wj config)" .
+.TP
 .I ~/.local/share/wj/YYYY/MM/DD.tsv
 The append-only event log, one file per day (override with \fB$WJ_DATA_DIR\fR). In
 a shared journal each author writes \fIDD.<actor>.tsv\fR and reads union them all.

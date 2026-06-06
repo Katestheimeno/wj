@@ -49,12 +49,15 @@ install: install-cli install-ui
 install-cli:
 	install -Dm755 wj $(DESTDIR)$(BINDIR)/wj
 	install -Dm644 wj.1 $(DESTDIR)$(PREFIX)/share/man/man1/wj.1
+	install -Dm644 wj.cfg.example $(DESTDIR)$(PREFIX)/share/doc/wj/wj.cfg.example
 
 install-ui: tui
 	install -Dm755 tui/wj-tui $(DESTDIR)$(BINDIR)/wj-tui
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/wj $(DESTDIR)$(BINDIR)/wj-tui $(DESTDIR)$(PREFIX)/share/man/man1/wj.1
+	rm -f $(DESTDIR)$(BINDIR)/wj $(DESTDIR)$(BINDIR)/wj-tui \
+	      $(DESTDIR)$(PREFIX)/share/man/man1/wj.1 \
+	      $(DESTDIR)$(PREFIX)/share/doc/wj/wj.cfg.example
 
 clean:
 	rm -f tui/wj-tui
