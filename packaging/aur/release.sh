@@ -10,6 +10,10 @@
 set -euo pipefail
 
 V="${1:?usage: release.sh <version>   (e.g. 0.12.0)}"
+V="${V#v}"   # tolerate a leading 'v' — the script adds it itself for the tag/URL
+# A bare X.Y.Z keeps the git tag (vX.Y.Z), the source dir, and pkgver consistent.
+[[ $V =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || { echo "release.sh: version must be X.Y.Z, e.g. 0.12.1 (got '$1')" >&2; exit 1; }
 
 # Resolve key locations from where this script lives.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
