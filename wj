@@ -1618,6 +1618,7 @@ cmd_gantt() {
         nm=$(report_nm "$d" "$file")
         while read -r id; do
             [[ -z $id ]] && continue
+            (( MINE )) && [[ $id == */* ]] && continue   # --mine: skip teammates' tasks
             task_cancelled "$file" "$id" && continue
             proj=$(task_project "$file" "$id")
             case $BY in
@@ -2160,8 +2161,8 @@ FLAGS
                       task out across each of its tags, so the TOTAL can exceed
                       real time; --by person groups by author in a shared log.)
   --due YYYY-MM-DD    add: optional deadline for a pending task.
-  --mine              shared journal: restrict status/grid/pending to your own
-                      items (default shows everyone's).
+  --mine              shared journal: restrict status/grid/gantt/pending to your
+                      own items (default shows everyone's).
   --format FMT        export format: csv | json | tsv. Default: csv.
   --parallel          start/resume: leave any other running task in the same
                       project running, so you track several in parallel.

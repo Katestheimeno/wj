@@ -304,11 +304,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selTask = clamp(m.selTask, 0, len(m.filteredTasks())-1) // lists may shrink
 		m.selPend = clamp(m.selPend, 0, len(m.visiblePending())-1)
 		if m.mineOnly {
-			m.notice = "showing mine only (tasks + backlog)"
+			m.notice = "showing mine only (tasks + backlog + range)"
 		} else {
-			m.notice = "showing everyone (tasks + backlog)"
+			m.notice = "showing everyone (tasks + backlog + range)"
 		}
-		return m, m.loadShow(m.selectedTaskID(), m.currentDay()) // refresh the timeline
+		// the Range gantt is filtered server-side, so re-fetch it; Tasks/Pending
+		// filter client-side and update instantly.
+		return m, tea.Batch(m.loadGantt(), m.loadShow(m.selectedTaskID(), m.currentDay()))
 	case "L":
 		// cycle the panel layout (balanced → spotlight → golden → …); live only,
 		// the startup default comes from the config's layout= / -layout.
@@ -807,11 +809,9 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "tags":
 			// complete the trailing space-delimited token (a leading "-" for
 			// removal or "#" is preserved) against the known tags.
-			head, last := m.input.value, ""
+			head, last := "", m.input.value
 			if sp := strings.LastIndexByte(m.input.value, ' '); sp >= 0 {
 				head, last = m.input.value[:sp+1], m.input.value[sp+1:]
-			} else {
-				head, last = "", m.input.value
 			}
 			neg := strings.HasPrefix(last, "-")
 			stem := strings.TrimPrefix(strings.TrimPrefix(last, "-"), "#")

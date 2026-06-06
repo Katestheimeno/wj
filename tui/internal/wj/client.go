@@ -97,14 +97,19 @@ func (c Client) Mutate(args ...string) (string, error) {
 }
 
 // Gantt fetches the multi-day range overview. Empty from/to let the CLI apply
-// its default range (last 7 days through today); by is "project" or "task".
-func (c Client) Gantt(from, to, by string) (*Gantt, error) {
+// its default range (last 7 days through today); by is "project", "task", or
+// "person". mine rolls up only your own time (a shared journal otherwise sums
+// everyone's).
+func (c Client) Gantt(from, to, by string, mine bool) (*Gantt, error) {
 	args := []string{"gantt", "--by", by}
 	if from != "" {
 		args = append(args, "--from", from)
 	}
 	if to != "" {
 		args = append(args, "--to", to)
+	}
+	if mine {
+		args = append(args, "--mine")
 	}
 	var g Gantt
 	if err := c.readJSON(&g, args...); err != nil {
