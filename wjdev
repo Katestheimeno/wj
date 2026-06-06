@@ -47,6 +47,8 @@ build_tui() { ( cd "$REPO" && make tui >/dev/null ) && note "built $TUI"; }
 # (notes), continue (carry-over), plus a pending backlog with assorted due dates
 # and a reorder. "today" is left with running/paused/deferred tasks anchored to
 # the current clock, so the live view (header clock + Today section) has motion.
+# shellcheck disable=SC2034  # BE/FE/OPS/DOC/INF are consumed via `pick <name>`'s
+# nameref (local -n), an indirection shellcheck can't follow, so they read as unused.
 seed_data() {
     rm -rf "$WJ_DATA_DIR" "$WJ_CONFIG"
     "$WJ" config >/dev/null                        # default 09:00–19:00 shift
@@ -233,7 +235,7 @@ case "${1:-}" in
         tuiargs=(-wj "$WJ")
         if [[ -f "$WJ_CONFIG" ]]; then
             for k in confirm icons; do
-                v=$(sed -n "s/^[[:space:]]*$k[[:space:]]*=[[:space:]]*\\([A-Za-z]*\\).*/\\1/p" "$WJ_CONFIG" | tail -n1)
+                v=$(sed -n "s/^[[:space:]]*${k}[[:space:]]*=[[:space:]]*\\([A-Za-z]*\\).*/\\1/p" "$WJ_CONFIG" | tail -n1)
                 [[ -n $v ]] && tuiargs+=("-$k" "$v")
             done
         fi
