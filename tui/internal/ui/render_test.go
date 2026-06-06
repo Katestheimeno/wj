@@ -725,6 +725,7 @@ func TestRangeSpanPresets(t *testing.T) {
 func TestLogKeyOpensPrompt(t *testing.T) {
 	m := drilled()
 	m.today = m.currentDay()
+	want := m.selectedTaskID()
 	m, _ = mustModel(m.handleKey(keyMsg("n")))
 	if !m.confirm.active || !m.confirm.input.active {
 		t.Fatalf("'n' should arm a log confirm, got %+v", m.confirm)
@@ -732,6 +733,10 @@ func TestLogKeyOpensPrompt(t *testing.T) {
 	n, _ := mustModel(m.handleKey(keyMsg("y")))
 	if !n.input.active || n.input.action != "log" {
 		t.Fatalf("confirming 'n' should open a log (note) prompt, got %+v", n.input)
+	}
+	// the note must target the selected task (like amend/move), not the running one
+	if n.input.taskID != want {
+		t.Fatalf("log prompt taskID = %q, want selected task %q", n.input.taskID, want)
 	}
 }
 

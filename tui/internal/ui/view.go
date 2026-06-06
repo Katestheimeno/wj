@@ -734,7 +734,7 @@ func (m Model) helpOverlay() string {
 		{"p / r / c / d", "pause / resume / complete / defer (now)"},
 		{"P / R / C / D", "same, but prompt for an explicit time (--at)"},
 		{"a / m", "amend description / move (⇥ completes project)"},
-		{"n", "add a note (log) to the running task"},
+		{"n", "add a note (log) to the selected task"},
 		{"#", "edit tags (space-separated; -tag removes; ⇥ completes a known tag)"},
 		{"o", "carry over (continue) a past day's task today — copies desc + project + tags to a new id"},
 		{"x / X", "cancel (void) — destructive · X also prompts for a time"},

@@ -547,8 +547,8 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			prompt: "move " + id + " (target project; ⇥ completes)", taskID: id}, false, "move "+id+"?")
 		return next, cmd, true
 	case "n":
-		next, cmd := m.armOrInput(inputMode{active: true, action: "log",
-			prompt: "log (note on the running task)"}, false, "log a note?")
+		next, cmd := m.armOrInput(inputMode{active: true, action: "log", taskID: id,
+			prompt: "log " + id + " (note)"}, false, "log a note on "+id+"?")
 		return next, cmd, true
 	case "#": // edit tags: space-separated; a -tag removes; ⇥ completes
 		next, cmd := m.armOrInput(inputMode{active: true, action: "tags", taskID: id,
@@ -731,7 +731,7 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.keepPrompt("note required — esc to abort")
 			}
 			m.closeInput()
-			return m.issueMutation("log", []string{val})
+			return m.issueMutation("log", []string{in.taskID, val})
 		case "add": // new pending backlog task (not a dated mutation)
 			desc, proj, due := parsePendingInput(val)
 			if desc == "" {
