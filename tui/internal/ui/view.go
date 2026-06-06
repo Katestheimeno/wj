@@ -175,12 +175,18 @@ func (m Model) renderFooter(w int) string {
 	case m.input.active:
 		b.WriteString(inputStyle.Render(truncate(m.input.prompt+": "+withCursor(m.input.value, m.input.cursor), w)) + "\n")
 		hint := "[enter] confirm   [esc] cancel"
-		if m.input.action == "move" {
+		if m.input.action == "move" || m.input.action == "assign" {
 			prefix := m.input.value
-			if m.input.acPrefix != "" {
+			if m.input.acSet {
 				prefix = m.input.acPrefix
 			}
-			if ms := m.projectMatches(prefix); len(ms) > 0 {
+			var ms []string
+			if m.input.action == "move" {
+				ms = m.projectMatches(prefix)
+			} else {
+				ms = m.actorMatches(prefix)
+			}
+			if len(ms) > 0 {
 				if len(ms) > 6 {
 					ms = ms[:6]
 				}
@@ -720,6 +726,7 @@ func (m Model) helpOverlay() string {
 		{"d", "set / clear the selected task's deadline"},
 		{"Enter", "start (promote) the selected pending task"},
 		{"[ / ]", "move it up / down · x drop it"},
+		{"@", "assign: hand your item to a teammate (⇥ completes names), or claim a teammate's"},
 		{"", "focusing Pending shows the selected item in full in the main column"},
 		{"~Actions (on the selected task)", ""},
 		{"s", "start a new task: 'desc @project %time' (both optional; ⇥ completes)"},

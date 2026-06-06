@@ -68,6 +68,9 @@ type projectsMsg struct{ names []string }
 // tagsMsg carries every tag ever used (for the tag-editor autocomplete).
 type tagsMsg struct{ names []string }
 
+// actorsMsg carries every author handle (for the assign-prompt autocomplete).
+type actorsMsg struct{ names []string }
+
 // actorMsg carries the current author handle (to distinguish your tasks from
 // teammates' in a shared log).
 type actorMsg struct{ name string }
@@ -121,7 +124,9 @@ type inputMode struct {
 	cursor   int      // caret position within value, in runes (0..len)
 	taskID   string   // target task for amend/move
 	pending  []string // for action "at": the wj argv awaiting an --at suffix
-	acPrefix string   // move autocomplete: the prefix Tab cycles matches for
+	acPrefix string   // autocomplete: the prefix Tab cycles matches for
+	acSet    bool     // whether acPrefix has been captured (distinguishes an
+	// intentionally-empty prefix from "not yet captured"); cleared on any edit
 }
 
 // searchMode is the global task-search overlay (opened with /). The query is
@@ -205,6 +210,7 @@ type Model struct {
 	liveAt    time.Time  // wall-clock time m.live was fetched
 	projects  []string   // known project names (move autocomplete)
 	tags      []string   // known tag names (tag-editor autocomplete)
+	actors    []string   // known author handles (assign-prompt autocomplete)
 	actor     string     // this user's author handle (collaborative log; "" = solo)
 	tickN     int        // 1s ticks since start; data reloads every dataEveryTicks
 	tlOffset  int        // timeline scroll position
@@ -279,7 +285,7 @@ func New(cli wj.Client, from, to, by, confirm string, autoSync int) Model {
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.loadGantt(), m.loadLive(), m.loadProjects(), m.loadTags(),
-		m.loadActor(), m.loadPending(), tickCmd()}
+		m.loadActor(), m.loadActors(), m.loadPending(), tickCmd()}
 	if m.autoSync > 0 { // detect whether the data dir is a sync repo (gates auto-sync)
 		cmds = append(cmds, m.loadSyncable())
 	}

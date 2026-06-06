@@ -184,7 +184,9 @@ Hand a backlog item to a teammate: it moves to their list (becoming
 You can push one of your own items to someone, or claim a teammate's for
 yourself \(em
 .B wj assign alice/P1 me
-\(em but not move an item between two other people. Shared journals also accept
+\(em but not move an item between two other people. The assignee must be a known
+author (one already present in the journal); an unknown name is rejected rather
+than silently creating a stray backlog. Shared journals also accept
 .B pending --mine
 to list only your backlog. Items are author-partitioned like the day log, so the
 backlog merges conflict-free.

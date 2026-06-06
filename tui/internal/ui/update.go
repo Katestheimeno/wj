@@ -52,6 +52,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tags = msg.names
 		return m, nil
 
+	case actorsMsg:
+		m.actors = msg.names
+		return m, nil
+
 	case actorMsg:
 		m.actor = msg.name
 		return m, nil
@@ -402,6 +406,22 @@ func (m Model) keyPending(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.mutate("lower", id)
 		}
+	case "@": // assign: claim a teammate's item, or hand your own to someone
+		p, ok := m.selectedPending()
+		if !ok {
+			return m, nil
+		}
+		if !m.pendingOwned(p) {
+			// a teammate's item — the only valid move is claiming it to yourself
+			return m.armOrRaw("assign", []string{p.ID, "me"}, false, "claim "+p.ID+" — assign it to you?")
+		}
+		// your own item — hand it to a teammate (type their handle)
+		if len(m.actorMatches("")) == 0 {
+			m.notice = "no teammates to assign to (you're the only author here)"
+			return m, nil
+		}
+		return m.armOrInput(inputMode{active: true, action: "assign", taskID: p.ID,
+			prompt: "assign " + p.ID + " to (teammate handle)"}, false, "assign "+p.ID+"?")
 	}
 	return m, nil
 }
@@ -736,6 +756,12 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				d = "-"
 			}
 			return m, m.mutate("due", in.taskID, d)
+		case "assign": // hand a backlog item to another author (CLI validates who)
+			if val == "" {
+				return m.keepPrompt("teammate handle required — esc to abort")
+			}
+			m.closeInput()
+			return m, m.mutate("assign", in.taskID, val)
 		case "tags": // add/remove tags on a task (a "-tag" token removes)
 			adds, removes := parseTagInput(val)
 			m.closeInput()
@@ -758,17 +784,23 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.input.action {
 		case "move":
 			// the whole value is the project name
-			if m.input.acPrefix == "" {
-				m.input.acPrefix = m.input.value
+			if !m.input.acSet {
+				m.input.acPrefix, m.input.acSet = m.input.value, true
 			}
 			m.input.value = m.cycleProject(m.input.acPrefix, m.input.value)
+		case "assign":
+			// the whole value is a teammate handle
+			if !m.input.acSet {
+				m.input.acPrefix, m.input.acSet = m.input.value, true
+			}
+			m.input.value = m.cycleActor(m.input.acPrefix, m.input.value)
 		case "start", "add":
 			// only the trailing "@token" is a project (the rest is the desc, plus
 			// an optional %time for start / !due for add) — same as the start prompt.
 			if at := strings.LastIndexByte(m.input.value, '@'); at >= 0 {
 				head, proj := m.input.value[:at+1], m.input.value[at+1:]
-				if m.input.acPrefix == "" {
-					m.input.acPrefix = proj
+				if !m.input.acSet {
+					m.input.acPrefix, m.input.acSet = proj, true
 				}
 				m.input.value = head + m.cycleProject(m.input.acPrefix, proj)
 			}
@@ -783,8 +815,8 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			neg := strings.HasPrefix(last, "-")
 			stem := strings.TrimPrefix(strings.TrimPrefix(last, "-"), "#")
-			if m.input.acPrefix == "" {
-				m.input.acPrefix = stem
+			if !m.input.acSet {
+				m.input.acPrefix, m.input.acSet = stem, true
 			}
 			comp := m.cycleTag(m.input.acPrefix, stem)
 			if neg {
@@ -815,19 +847,19 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyBackspace:
 		m.input.value, m.input.cursor = runeDeleteBefore(m.input.value, m.input.cursor)
-		m.input.acPrefix = "" // editing restarts autocomplete
+		m.input.acPrefix, m.input.acSet = "", false // editing restarts autocomplete
 		return m, nil
 	case tea.KeyCtrlW, tea.KeyCtrlH: // Ctrl+W / Ctrl+Backspace: delete the previous word
 		m.input.value, m.input.cursor = runeDeleteWordBefore(m.input.value, m.input.cursor)
-		m.input.acPrefix = ""
+		m.input.acPrefix, m.input.acSet = "", false
 		return m, nil
 	case tea.KeyDelete:
 		m.input.value, m.input.cursor = runeDeleteAt(m.input.value, m.input.cursor)
-		m.input.acPrefix = ""
+		m.input.acPrefix, m.input.acSet = "", false
 		return m, nil
 	case tea.KeyRunes, tea.KeySpace:
 		m.input.value, m.input.cursor = runeInsert(m.input.value, m.input.cursor, string(msg.Runes))
-		m.input.acPrefix = ""
+		m.input.acPrefix, m.input.acSet = "", false
 		return m, nil
 	}
 	return m, nil
@@ -870,6 +902,35 @@ func (m Model) tagMatches(prefix string) []string {
 		}
 	}
 	return out
+}
+
+// actorMatches lists known author handles with the given prefix, excluding
+// yourself (assigning your own item to yourself is a no-op).
+func (m Model) actorMatches(prefix string) []string {
+	lc := strings.ToLower(prefix)
+	var out []string
+	for _, a := range m.actors {
+		if a == m.actor {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(a), lc) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func (m Model) cycleActor(prefix, cur string) string {
+	matches := m.actorMatches(prefix)
+	if len(matches) == 0 {
+		return cur
+	}
+	for i, a := range matches {
+		if a == cur {
+			return matches[(i+1)%len(matches)]
+		}
+	}
+	return matches[0]
 }
 
 func (m Model) cycleTag(prefix, cur string) string {

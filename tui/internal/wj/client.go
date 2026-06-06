@@ -57,6 +57,10 @@ func (c Client) Projects() ([]string, error) { return c.lines("_projects") }
 // Tags lists every tag ever applied (for the tag-editor autocomplete).
 func (c Client) Tags() ([]string, error) { return c.lines("_tags") }
 
+// Actors lists every author handle in the journal (you + teammates), for the
+// assign-prompt autocomplete.
+func (c Client) Actors() ([]string, error) { return c.lines("_actors") }
+
 // Actor returns the current author handle, used to tell your tasks from
 // teammates' in a shared log ("" on error).
 func (c Client) Actor() (string, error) {

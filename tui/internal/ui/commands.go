@@ -81,6 +81,17 @@ func (m Model) loadActor() tea.Cmd {
 	}
 }
 
+func (m Model) loadActors() tea.Cmd {
+	cli := m.cli
+	return func() tea.Msg {
+		names, err := cli.Actors()
+		if err != nil {
+			return actorsMsg{}
+		}
+		return actorsMsg{names: names}
+	}
+}
+
 // loadTeam fetches the per-author standup for the team overlay (today).
 func (m Model) loadTeam() tea.Cmd {
 	cli, today := m.cli, m.today
@@ -160,7 +171,7 @@ func (m Model) mutate(args ...string) tea.Cmd {
 // reloadAll refreshes every panel from the CLI (used after a mutation).
 func (m Model) reloadAll() tea.Cmd {
 	cmds := []tea.Cmd{m.loadGantt(), m.loadGrid(m.currentDay()),
-		m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive(), m.loadPending(), m.loadTags()}
+		m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive(), m.loadPending(), m.loadTags(), m.loadActors()}
 	if m.search.active { // keep an open search overlay in sync with mutations
 		cmds = append(cmds, m.runSearch(m.search.query))
 	}

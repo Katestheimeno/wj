@@ -370,7 +370,8 @@ Sidebar:
   `=` paused, `»` deferred, `x` done.
 - **Pending** — the [backlog](#pending-backlog): `a` add (`desc @project
   !YYYY-MM-DD`), `d` set/clear the due date, `[`/`]` reorder, `x` drop, `Enter`
-  to start (promote). Deadlines are colored by urgency (overdue red, due-soon amber).
+  to start (promote), `@` [assign](#collaboration-shared-journal) to a teammate
+  (or claim theirs). Deadlines are colored by urgency (overdue red, due-soon amber).
   Because the list is narrow, focusing this panel shows the **selected item in
   full** — its word-wrapped description plus project, due date, and created time —
   in the main column (where the Timeline normally sits).
@@ -556,6 +557,8 @@ In the TUI:
 - **`w`** opens a live **team** overlay (who's on what + day totals).
 - **`b`** cycles the Range rows **project → task → person**.
 - **`M`** toggles the day's Tasks panel between **everyone** and **mine**.
+- **`@`** in the Pending panel assigns the selected item — hand one of yours to a
+  teammate, or claim a teammate's read-only item to yourself in one keystroke.
 - Teammates' tasks and backlog items are tinted by author and read-only.
 
 ## Retroactive entry

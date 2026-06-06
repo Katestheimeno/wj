@@ -1843,6 +1843,10 @@ cmd_assign() {
     [[ $who == me ]] && who=$me            # the literal 'me' means yourself
     who=$(norm_actor "$who")              # same normalization cur_actor uses, so files agree
     [[ -n $who ]] || die "assign needs a valid person"
+    # the assignee must be a known author (yourself, or someone already in the
+    # journal) — guards against a typo silently spawning a ghost backlog file.
+    list_actors | grep -qxF "$who" \
+        || die "no such author: $who (known: $(list_actors | tr '\n' ' '))"
     pending_migrate
     owner=$(pid_actor "$id")
     # you can only move your own item out, or pull a teammate's item to yourself

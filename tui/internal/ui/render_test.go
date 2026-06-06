@@ -1764,6 +1764,62 @@ func TestTeammatePendingGating(t *testing.T) {
 	}
 }
 
+func TestPendingAssignKey(t *testing.T) {
+	m := pendingModel()
+	m.actor = "me"
+	m.actors = []string{"alex", "me", "sam"} // teammates exist, so push opens a prompt
+
+	// a teammate's item: '@' claims it to you -> runs `assign alice/P1 me`
+	m.confirmLevel = confirmAll // so the claim arms an inspectable confirm
+	m.pending = []wj.Pending{{ID: "alice/P1", Actor: "alice", Desc: "theirs"}}
+	m.selPend = 0
+	next, _ := mustModel(m.handleKey(keyMsg("@")))
+	if !next.confirm.active || next.confirm.verb != "assign" {
+		t.Fatalf("@ on a teammate's item should arm an assign confirm, got %+v", next.confirm)
+	}
+	if got := next.confirm.valueArgs; len(got) != 2 || got[0] != "alice/P1" || got[1] != "me" {
+		t.Errorf("claim args = %v, want [alice/P1 me]", got)
+	}
+
+	// your own item: '@' opens the assign prompt where you type the assignee
+	m.confirmLevel = confirmOff
+	m.pending = []wj.Pending{{ID: "P2", Actor: "me", Desc: "mine"}}
+	m.selPend = 0
+	next, _ = mustModel(m.handleKey(keyMsg("@")))
+	if !next.input.active || next.input.action != "assign" || next.input.taskID != "P2" {
+		t.Fatalf("@ on your own item should open the assign prompt for P2, got %+v", next.input)
+	}
+	// submitting the assignee issues `assign P2 <who>` (no error path)
+	next.input.value = "bob"
+	out, _ := mustModel(next.handleKey(keyMsg("enter")))
+	if out.input.active {
+		t.Error("submitting the assignee should close the prompt")
+	}
+}
+
+func TestAssignActorAutocomplete(t *testing.T) {
+	m := pendingModel()
+	m.actor = "me"
+	m.actors = []string{"alex", "me", "sam"} // includes self; completion skips it
+	// open the assign prompt as if @ was pressed on your own item
+	m.input = inputMode{active: true, action: "assign", taskID: "P2", value: ""}
+	// Tab cycles through teammate handles (not yourself), alphabetical
+	next, _ := mustModel(m.handleKey(keyMsg("tab")))
+	if next.input.value != "alex" {
+		t.Fatalf("first Tab = %q, want alex", next.input.value)
+	}
+	next, _ = mustModel(next.handleKey(keyMsg("tab")))
+	if next.input.value != "sam" {
+		t.Fatalf("second Tab = %q, want sam (skipping yourself)", next.input.value)
+	}
+	// actorMatches never offers yourself
+	for _, a := range m.actorMatches("") {
+		if a == "me" {
+			t.Error("actorMatches should exclude yourself")
+		}
+	}
+}
+
 func TestVisiblePendingOrdersMineFirst(t *testing.T) {
 	m := pendingModel()
 	m.actor = "me"
