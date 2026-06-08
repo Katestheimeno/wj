@@ -30,6 +30,24 @@ BR="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || true)"
 git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet \
     || { echo "release.sh: working tree not clean — commit or stash first" >&2; exit 1; }
 
+# Confirm before any mutation: from here on the script bumps, commits, tags, and
+# pushes to GitHub + the AUR — none of it easy to undo. Set WJ_RELEASE_YES=1 (or
+# pass -y/--yes) to skip the prompt for automation.
+case "${2:-}" in -y|--yes) WJ_RELEASE_YES=1 ;; esac
+if [ -z "${WJ_RELEASE_YES:-}" ]; then
+    CUR="$(sed -n 's/^WJ_VERSION="\(.*\)"/\1/p' "$REPO/wj" | head -n1)"
+    echo "About to release ${CUR:-?} -> $V:"
+    echo "  • bump wj / wj.1 / PKGBUILD, commit, and push main"
+    echo "  • tag v$V and push it to GitHub"
+    echo "  • pin the checksum, build/install locally, and publish to the AUR"
+    printf 'Continue? [y/N] '
+    read -r reply || reply=
+    case "$reply" in
+        [yY] | [yY][eE][sS]) ;;
+        *) echo "release.sh: aborted — nothing changed" >&2; exit 1 ;;
+    esac
+fi
+
 echo "==> Releasing wj $V"
 
 # 1. Bump the version everywhere it is recorded: the CLI's WJ_VERSION, the man
