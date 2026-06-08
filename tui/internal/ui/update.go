@@ -839,6 +839,12 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.cursor++
 		}
 		return m, nil
+	case tea.KeyCtrlLeft: // jump to the start of the previous word
+		m.input.cursor = runeWordLeft(m.input.value, m.input.cursor)
+		return m, nil
+	case tea.KeyCtrlRight: // jump past the end of the next word
+		m.input.cursor = runeWordRight(m.input.value, m.input.cursor)
+		return m, nil
 	case tea.KeyHome, tea.KeyCtrlA:
 		m.input.cursor = 0
 		return m, nil
@@ -846,7 +852,7 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.cursor = len([]rune(m.input.value))
 		return m, nil
 	case tea.KeyBackspace:
-		m.input.value, m.input.cursor = runeDeleteBefore(m.input.value, m.input.cursor)
+		m.input.value, m.input.cursor = smartDeleteBefore(m.input.value, m.input.cursor)
 		m.input.acPrefix, m.input.acSet = "", false // editing restarts autocomplete
 		return m, nil
 	case tea.KeyCtrlW, tea.KeyCtrlH: // Ctrl+W / Ctrl+Backspace: delete the previous word
@@ -858,7 +864,13 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.acPrefix, m.input.acSet = "", false
 		return m, nil
 	case tea.KeyRunes, tea.KeySpace:
-		m.input.value, m.input.cursor = runeInsert(m.input.value, m.input.cursor, string(msg.Runes))
+		// a single typed rune gets editor-style bracket/quote pairing; pasted or
+		// multi-rune input is inserted verbatim.
+		if r := msg.Runes; len(r) == 1 {
+			m.input.value, m.input.cursor = smartInsert(m.input.value, m.input.cursor, r[0])
+		} else {
+			m.input.value, m.input.cursor = runeInsert(m.input.value, m.input.cursor, string(msg.Runes))
+		}
 		m.input.acPrefix, m.input.acSet = "", false
 		return m, nil
 	}

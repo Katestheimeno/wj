@@ -129,6 +129,92 @@ func runeDeleteAt(s string, i int) (string, int) {
 	return string(out), i
 }
 
+// runeWordLeft returns the rune index one word to the left of i (Ctrl+Left): it
+// skips any whitespace just before the cursor, then the run of non-whitespace,
+// landing where that word begins. Mirrors runeDeleteWordBefore's boundaries.
+func runeWordLeft(s string, i int) int {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	for i > 0 && unicode.IsSpace(r[i-1]) {
+		i--
+	}
+	for i > 0 && !unicode.IsSpace(r[i-1]) {
+		i--
+	}
+	return i
+}
+
+// runeWordRight returns the rune index one word to the right of i (Ctrl+Right):
+// it skips whitespace under the cursor, then the run of non-whitespace, landing
+// just past that word's end.
+func runeWordRight(s string, i int) int {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	for i < len(r) && unicode.IsSpace(r[i]) {
+		i++
+	}
+	for i < len(r) && !unicode.IsSpace(r[i]) {
+		i++
+	}
+	return i
+}
+
+// pairFor maps an opening bracket/quote to its closing partner. Quotes close
+// themselves. pairClose lists every rune that can be "skipped over".
+var pairFor = map[rune]rune{'(': ')', '[': ']', '{': '}', '"': '"', '\'': '\'', '`': '`'}
+var pairClose = map[rune]bool{')': true, ']': true, '}': true, '"': true, '\'': true, '`': true}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
+// shouldPair decides whether typing opener c at index i should auto-insert its
+// closer. It declines when the cursor abuts a word char on the right (so the
+// closer wouldn't land mid-word), and for quotes also when it abuts a word char
+// on the left — that keeps contractions/possessives like "don't" from doubling.
+func shouldPair(r []rune, i int, c rune) bool {
+	if i < len(r) && isWordRune(r[i]) {
+		return false
+	}
+	if (c == '"' || c == '\'' || c == '`') && i > 0 && isWordRune(r[i-1]) {
+		return false
+	}
+	return true
+}
+
+// smartInsert inserts a single typed rune c at index i with editor-style
+// pairing: typing a closer that already sits under the cursor steps over it
+// (no duplicate); typing an opener inserts its closer and leaves the caret
+// between the two (subject to shouldPair); anything else is a plain insert.
+func smartInsert(s string, i int, c rune) (string, int) {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	if pairClose[c] && i < len(r) && r[i] == c { // step over an existing closer
+		return s, i + 1
+	}
+	if closer, ok := pairFor[c]; ok && shouldPair(r, i, c) {
+		out := make([]rune, 0, len(r)+2)
+		out = append(out, r[:i]...)
+		out = append(out, c, closer)
+		out = append(out, r[i:]...)
+		return string(out), i + 1
+	}
+	return runeInsert(s, i, string(c))
+}
+
+// smartDeleteBefore is Backspace that also removes a closer when the cursor sits
+// inside an empty pair (e.g. "(|)" -> "|"); otherwise it falls back to a plain
+// delete-before.
+func smartDeleteBefore(s string, i int) (string, int) {
+	r := []rune(s)
+	i = clamp(i, 0, len(r))
+	if i > 0 && i < len(r) {
+		if closer, ok := pairFor[r[i-1]]; ok && r[i] == closer {
+			out := append(append([]rune{}, r[:i-1]...), r[i+1:]...)
+			return string(out), i - 1
+		}
+	}
+	return runeDeleteBefore(s, i)
+}
+
 // withCursor renders value with an insertion-bar cursor (▏) at rune index i,
 // so the prompt shows where typed text will land.
 func withCursor(value string, i int) string {

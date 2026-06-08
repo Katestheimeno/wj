@@ -1487,6 +1487,90 @@ func TestRuneDeleteWordBefore(t *testing.T) {
 	}
 }
 
+func TestRuneWordMotion(t *testing.T) {
+	left := []struct {
+		s    string
+		i    int
+		want int
+	}{
+		{"hello world", 11, 6}, // from end -> start of "world"
+		{"hello world", 6, 0},  // from start of "world" -> start of "hello"
+		{"foo  bar", 8, 5},     // skip the run of spaces, land on "bar"
+		{"one", 0, 0},          // already at start
+		{"", 0, 0},
+	}
+	for _, c := range left {
+		if got := runeWordLeft(c.s, c.i); got != c.want {
+			t.Errorf("runeWordLeft(%q,%d) = %d, want %d", c.s, c.i, got, c.want)
+		}
+	}
+	right := []struct {
+		s    string
+		i    int
+		want int
+	}{
+		{"hello world", 0, 5},  // end of "hello"
+		{"hello world", 5, 11}, // skip space, end of "world"
+		{"foo  bar", 0, 3},     // end of "foo"
+		{"one", 3, 3},          // already at end
+		{"", 0, 0},
+	}
+	for _, c := range right {
+		if got := runeWordRight(c.s, c.i); got != c.want {
+			t.Errorf("runeWordRight(%q,%d) = %d, want %d", c.s, c.i, got, c.want)
+		}
+	}
+}
+
+func TestSmartInsertPairing(t *testing.T) {
+	cases := []struct {
+		name    string
+		s       string
+		i       int
+		c       rune
+		wantS   string
+		wantCur int
+	}{
+		{"open bracket pairs", "", 0, '[', "[]", 1},
+		{"open brace pairs", "", 0, '{', "{}", 1},
+		{"quote pairs at boundary", "say ", 4, '"', `say ""`, 5},
+		{"step over closer", "[]", 1, ']', "[]", 2},
+		{"step over quote", `""`, 1, '"', `""`, 2},
+		{"no pair before word char", "abc", 0, '(', "(abc", 1}, // would split a word -> plain insert
+		{"quote not doubled in contraction", "don", 3, '\'', "don'", 4},
+		{"plain char inserts", "ab", 1, 'x', "axb", 2},
+	}
+	for _, c := range cases {
+		gotS, gotCur := smartInsert(c.s, c.i, c.c)
+		if gotS != c.wantS || gotCur != c.wantCur {
+			t.Errorf("%s: smartInsert(%q,%d,%q) = (%q,%d), want (%q,%d)",
+				c.name, c.s, c.i, c.c, gotS, gotCur, c.wantS, c.wantCur)
+		}
+	}
+}
+
+func TestSmartDeleteBeforePair(t *testing.T) {
+	cases := []struct {
+		s       string
+		i       int
+		wantS   string
+		wantCur int
+	}{
+		{"()", 1, "", 0},    // inside an empty pair -> delete both
+		{`""`, 1, "", 0},    // empty quotes too
+		{"(x)", 1, "x)", 0}, // non-empty pair -> only the opener goes
+		{"ab", 2, "a", 1},   // ordinary backspace
+		{"[x", 1, "x", 0},   // opener whose next char isn't its closer -> plain delete
+	}
+	for _, c := range cases {
+		gotS, gotCur := smartDeleteBefore(c.s, c.i)
+		if gotS != c.wantS || gotCur != c.wantCur {
+			t.Errorf("smartDeleteBefore(%q,%d) = (%q,%d), want (%q,%d)",
+				c.s, c.i, gotS, gotCur, c.wantS, c.wantCur)
+		}
+	}
+}
+
 func TestCtrlWDeletesWordInPrompt(t *testing.T) {
 	m := sampleModel()
 	m.input = inputMode{active: true, action: "start", value: "fix the bug", cursor: 11}
