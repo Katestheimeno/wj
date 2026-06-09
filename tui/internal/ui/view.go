@@ -612,10 +612,16 @@ func (m Model) runningHeader() string {
 	if m.live == nil || m.liveAt.IsZero() {
 		return ""
 	}
-	for _, t := range m.myTasks() { // your running task, not a teammate's
-		if t.Status != "in-progress" {
-			continue
+	var active []wj.Task
+	for _, t := range m.myTasks() {
+		if t.Status == "in-progress" {
+			active = append(active, t)
 		}
+	}
+	if len(active) > 1 {
+		return m.pauseBadge()
+	}
+	for _, t := range active {
 		mins := t.Minutes + int(time.Since(m.liveAt).Minutes())
 		color := ProjectColor(t.Project)
 		run := lipgloss.NewStyle().Foreground(color).Render(pickGlyph(">", "▶") + " " + t.ID + " [" + t.Project + "]")
