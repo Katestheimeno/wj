@@ -2012,3 +2012,151 @@ func TestTeamOverlayRender(t *testing.T) {
 		}
 	}
 }
+
+// pickModel is a model on the Day pane with a few tasks, for the J picker tests.
+func pickModel() Model {
+	m := sampleModel()
+	m.pane = paneDay
+	m.grid = &wj.Grid{
+		Date: "2026-05-28",
+		Tasks: []wj.GridTask{
+			{ID: "T1", Project: "backend", Desc: "Refactor auth", Status: "completed", Minutes: 180},
+			{ID: "T2", Project: "backend", Desc: "Wire up cache", Status: "in-progress", Minutes: 42},
+			{ID: "T3", Project: "meetings", Desc: "Standup", Status: "completed", Minutes: 15},
+		},
+	}
+	return m
+}
+
+func TestPickerJumpsByDigit(t *testing.T) {
+	m := pickModel()
+	// J opens the picker without changing the selection yet
+	m, _ = mustModel(m.handleKey(keyMsg("J")))
+	if !m.pick.active {
+		t.Fatal("J should open the task picker")
+	}
+	// pressing 3 jumps straight to the third listed task and focuses Tasks
+	m, _ = mustModel(m.handleKey(keyMsg("3")))
+	if m.pick.active {
+		t.Error("picker should close after a digit jump")
+	}
+	if m.selTask != 2 {
+		t.Errorf("selTask = %d, want 2 (the third task)", m.selTask)
+	}
+	if m.pane != paneDay {
+		t.Errorf("pane = %d, want paneDay so the highlight shows", m.pane)
+	}
+	if id := m.selectedTaskID(); id != "T3" {
+		t.Errorf("selected = %q, want T3", id)
+	}
+}
+
+func TestPickerJumpsByLetter(t *testing.T) {
+	// build a model with more rows than digits so letters are exercised
+	m := sampleModel()
+	m.pane = paneDay
+	tasks := make([]wj.GridTask, 11)
+	for i := range tasks {
+		tasks[i] = wj.GridTask{ID: fmt.Sprintf("T%d", i+1), Project: "backend", Status: "completed", Minutes: 10}
+	}
+	m.grid = &wj.Grid{Date: "2026-05-28", Tasks: tasks}
+	m, _ = mustModel(m.handleKey(keyMsg("J")))
+	// the 11th row's label is the 11th entry in pickKeys: "1".."9" then "a","b"
+	if pickKeys[10] != "b" {
+		t.Fatalf("pickKeys[10] = %q, want b", pickKeys[10])
+	}
+	m, _ = mustModel(m.handleKey(keyMsg("b")))
+	if m.pick.active || m.selTask != 10 {
+		t.Errorf("'b' should jump to row 10: active=%v selTask=%d", m.pick.active, m.selTask)
+	}
+}
+
+func TestPickerLetterKeysSkipNavBindings(t *testing.T) {
+	// j/k/g/q must stay navigation/cancel, never become row labels
+	for _, reserved := range []string{"j", "k", "g", "q"} {
+		if indexOf(pickKeys, reserved) >= 0 {
+			t.Errorf("%q must not be a pick label (it's a nav/cancel key)", reserved)
+		}
+	}
+}
+
+func TestPickerNavigateAndEnter(t *testing.T) {
+	m := pickModel()
+	m, _ = mustModel(m.handleKey(keyMsg("J")))
+	m, _ = mustModel(m.handleKey(keyMsg("j"))) // 0 -> 1
+	m, _ = mustModel(m.handleKey(keyMsg("j"))) // 1 -> 2
+	m, _ = mustModel(m.handleKey(keyMsg("k"))) // 2 -> 1
+	if m.pick.sel != 1 {
+		t.Fatalf("pick.sel = %d, want 1 after jjk", m.pick.sel)
+	}
+	m, _ = mustModel(m.handleKey(keyMsg("enter")))
+	if m.pick.active || m.selTask != 1 {
+		t.Errorf("enter should select row 1: active=%v selTask=%d", m.pick.active, m.selTask)
+	}
+}
+
+func TestPickerDigitOutOfRangeIgnored(t *testing.T) {
+	m := pickModel() // 3 tasks
+	m, _ = mustModel(m.handleKey(keyMsg("J")))
+	m, _ = mustModel(m.handleKey(keyMsg("9"))) // no 9th task
+	if !m.pick.active {
+		t.Error("an out-of-range digit should be a no-op, leaving the picker open")
+	}
+	if m.selTask != 0 {
+		t.Errorf("selTask moved to %d on an out-of-range digit", m.selTask)
+	}
+	// esc closes without changing the selection
+	m, _ = mustModel(m.handleKey(keyMsg("esc")))
+	if m.pick.active {
+		t.Error("esc should close the picker")
+	}
+}
+
+func TestPickerNoTasksDoesNotOpen(t *testing.T) {
+	m := sampleModel()
+	m.pane = paneDay
+	m.grid = &wj.Grid{Date: "2026-05-28"} // no tasks
+	m, _ = mustModel(m.handleKey(keyMsg("J")))
+	if m.pick.active {
+		t.Error("J on an empty day should not open the picker")
+	}
+	if m.notice == "" {
+		t.Error("J on an empty day should explain there's nothing to jump to")
+	}
+}
+
+func TestTimedCarryOverPromptsForTime(t *testing.T) {
+	m := pickModel()
+	m.today = "2026-06-01"      // the focused day (2026-05-28) is in the past
+	m.confirmLevel = confirmOff // skip the y/n guard so the prompt opens directly
+	m.selTask = 0               // T1
+	m, _ = mustModel(m.handleKey(keyMsg("O")))
+	if !m.input.active || m.input.action != "at" {
+		t.Fatalf("O should open an at-time prompt: active=%v action=%q", m.input.active, m.input.action)
+	}
+	// the pending argv carries `continue T1 ... --date <source day>`; the prompt
+	// later appends --at <time>.
+	joined := strings.Join(m.input.pending, " ")
+	for _, want := range []string{"continue", "T1", "--date", "2026-05-28"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("pending argv %q missing %q", joined, want)
+		}
+	}
+	if strings.Contains(joined, "--at") {
+		t.Errorf("pending should not carry --at yet: %q", joined)
+	}
+}
+
+func TestTimedCarryOverRejectsToday(t *testing.T) {
+	m := pickModel()
+	m.today = "2026-05-28" // same as the focused day — nothing to carry over
+	m.confirmLevel = confirmOff
+	m.selTask = 0
+	m, _ = mustModel(m.handleKey(keyMsg("O")))
+	if m.input.active {
+		t.Error("O on today should not open a prompt")
+	}
+	if m.notice == "" {
+		t.Error("O on today should explain it copies from a past day")
+	}
+}

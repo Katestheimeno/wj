@@ -196,6 +196,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.search.active {
 		return m.handleSearch(msg)
 	}
+	if m.pick.active {
+		return m.handlePick(msg)
+	}
 	if m.input.active {
 		return m.handleInput(msg)
 	}
@@ -231,6 +234,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		m.search = searchMode{active: true}
 		return m, m.runSearch("") // prime with everything (most recent first)
+	case "J": // quick task picker: a numbered jump within the focused day's tasks
+		ts := m.filteredTasks()
+		if len(ts) == 0 {
+			m.notice = "no tasks on " + m.currentDay() + " to jump to"
+			return m, nil
+		}
+		sel := clamp(m.selTask, 0, len(ts)-1)
+		m.pick = pickMode{active: true, sel: sel}
+		return m, nil
 	case "ctrl+r":
 		return m, m.reloadAll()
 	case "left":
@@ -481,7 +493,7 @@ func (m Model) keyTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // selected task (so it can be gated on a teammate's read-only task).
 func isMutationKey(s string) bool {
 	switch s {
-	case "p", "r", "c", "d", "P", "R", "C", "D", "X", "o", "a", "m", "n", "#", "x":
+	case "p", "r", "c", "d", "P", "R", "C", "D", "X", "o", "O", "a", "m", "n", "#", "x":
 		return true
 	}
 	return false
@@ -537,6 +549,20 @@ func (m Model) keyMutation(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		// so run directly (raw) rather than via issueMutation's past-day time prompt.
 		valueArgs := append(m.withPauseFlag("continue", []string{id}), "--date", day)
 		next, cmd := m.armOrRaw("continue", valueArgs, false, "carry over "+id+" to today?")
+		return next, cmd, true
+	case "O": // carry over a past day's task, prompting for an explicit start time
+		day := m.currentDay()
+		if day == "" || day == m.today {
+			m.notice = "continue copies a past day's task into today — switch to a past day with ←/→"
+			return m, nil, true
+		}
+		// the at-prompt appends --at <time> to this argv and runs it; --date is
+		// the *source* day (the CLI always writes the fresh task to today).
+		pending := append([]string{"continue"}, m.withPauseFlag("continue", []string{id})...)
+		pending = append(pending, "--date", day)
+		in := inputMode{active: true, action: "at", pending: pending,
+			prompt: "carry over " + id + " to today — start time (e.g. 14:30)"}
+		next, cmd := m.armOrInput(in, false, "carry over "+id+" at a time?")
 		return next, cmd, true
 	case "a":
 		next, cmd := m.armOrInput(inputMode{active: true, action: "amend",
@@ -1037,6 +1063,56 @@ func (m Model) jumpToResult() (tea.Model, tea.Cmd) {
 	m.jumpTaskID = r.ID
 	m.pane = paneTimeline
 	return m, m.loadGantt()
+}
+
+// handlePick resolves the quick task picker: a digit (1-9) jumps straight to
+// that listed task, ↑↓/jk move the highlight, enter confirms it, esc/J cancels.
+func (m Model) handlePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.filteredTasks())
+	switch msg.String() {
+	case "esc", "q", "J", "ctrl+c":
+		m.pick = pickMode{}
+		return m, nil
+	case "up", "k", "ctrl+p":
+		if m.pick.sel > 0 {
+			m.pick.sel--
+		}
+		return m, nil
+	case "down", "j", "ctrl+n":
+		if m.pick.sel < n-1 {
+			m.pick.sel++
+		}
+		return m, nil
+	case "g":
+		m.pick.sel = 0
+		return m, nil
+	case "G":
+		if n > 0 {
+			m.pick.sel = n - 1
+		}
+		return m, nil
+	case "enter":
+		return m.pickJump(m.pick.sel)
+	}
+	// a label key (digit or letter; see pickKeys) jumps straight to its row; a
+	// label past the end of the list is a no-op, leaving the picker open
+	if idx := indexOf(pickKeys, msg.String()); idx >= 0 && idx < n {
+		return m.pickJump(idx)
+	}
+	return m, nil
+}
+
+// pickJump closes the picker and points the selection at the idx-th listed task,
+// focusing the Tasks panel so the highlight shows (the day chart and sidebar
+// share selTask) and j/k continue from there.
+func (m Model) pickJump(idx int) (tea.Model, tea.Cmd) {
+	m.pick = pickMode{}
+	if idx < 0 || idx >= len(m.filteredTasks()) {
+		return m, nil
+	}
+	m.selTask = idx
+	m.pane = paneDay
+	return m, m.loadShow(m.selectedTaskID(), m.currentDay())
 }
 
 // handleConfirm resolves a y/n destructive-action prompt. Enter accepts (same as

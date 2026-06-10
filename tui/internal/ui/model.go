@@ -139,6 +139,31 @@ type searchMode struct {
 	sel     int
 }
 
+// pickMode is the quick task picker (opened with J): a labelled list of the
+// focused day's tasks. A single label key (see pickKeys) jumps straight to a
+// row; ↑↓/jk + enter also work. Selecting a task points selTask at it, so both
+// the day chart and the Tasks sidebar highlight it.
+type pickMode struct {
+	active bool
+	sel    int // highlighted row, an index into filteredTasks()
+}
+
+// pickKeys are the single-press jump labels for the task picker, in row order:
+// digits 1-9 first, then letters — skipping j/k/g/q, which the picker reserves
+// for navigation and cancel. Rows past the end of this set have no shortcut
+// (jk + enter still reach them). 31 labels comfortably covers a day's tasks.
+var pickKeys = func() []string {
+	keys := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}
+	for c := 'a'; c <= 'z'; c++ {
+		switch c {
+		case 'j', 'k', 'g', 'q': // reserved: move (jk) / first (g) / cancel (q)
+			continue
+		}
+		keys = append(keys, string(c))
+	}
+	return keys
+}()
+
 // confirmMode is a y/n guard for destructive mutations (cancel, drop).
 type confirmMode struct {
 	active    bool
@@ -195,6 +220,7 @@ type Model struct {
 	input         inputMode
 	confirm       confirmMode
 	search        searchMode
+	pick          pickMode
 	jumpTaskID    string // a search result to select once its day's grid loads
 	showHelp      bool
 	err           string

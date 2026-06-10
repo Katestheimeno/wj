@@ -39,6 +39,12 @@ func (m Model) View() string {
 			footerStyle.Render("type to filter · ↑↓ move · enter jump · esc cancel")
 	}
 
+	if m.pick.active {
+		return header + "\n" +
+			panel("Jump to task · "+m.currentDay(), accent, m.pickOverlay(w), true, w, 0) + "\n" +
+			footerStyle.Render("1-9/a-z jump · ↑↓/jk move · enter select · esc cancel")
+	}
+
 	foot := m.renderFooter(w)
 	legend := m.bottomLegend(w)
 	legendLines := 0
@@ -649,7 +655,7 @@ func (m Model) footerLine() string {
 	case paneRange:
 		return "j/k project · T today/window · h/l panel · 1-4 jump · ←→ day · [ ] window · ⇧1/2/3 span · z zoom · b by · / search · s start · ? help"
 	case paneDay:
-		return "j/k task · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · # tags · o carry-over · u undo · / search · ?"
+		return "j/k task · J jump · p/r/c/d pause/resume/done/defer (⇧=at time) · a/m/n amend/move/note · # tags · o/O carry-over (⇧=at time) · u undo · / search · ?"
 	case panePending:
 		return "j/k pick · enter start · a add · d due · [ ] reorder · x drop · h/l panel · z zoom · ? help"
 	default:
@@ -701,6 +707,49 @@ func (m Model) searchOverlay(w int) string {
 	return b.String()
 }
 
+// pickOverlay renders the quick task picker: the focused day's tasks, one per
+// row, each tagged with a 1-based jump number (status glyph, id, description,
+// project, duration), windowed to fit and highlighting the current selection.
+func (m Model) pickOverlay(w int) string {
+	cw := w - 4 // panel content width
+	ts := m.filteredTasks()
+	if len(ts) == 0 {
+		return dimStyle.Render("  (no tasks on this day)")
+	}
+	rows := make([]string, len(ts))
+	for i, t := range ts {
+		g, gc := statusGlyph(t.Status)
+		label := "  " // rows past the key set have no shortcut; j/k + enter still reach them
+		if i < len(pickKeys) {
+			label = pickKeys[i] + "."
+		}
+		meta := fmt.Sprintf("[%s]  %s", t.Project, fmtDur(t.Minutes))
+		if len(t.Tags) > 0 {
+			meta += "  #" + strings.Join(t.Tags, " #")
+		}
+		desc := t.Desc
+		if desc == "" {
+			desc = "(no description)"
+		}
+		if i == m.pick.sel {
+			plain := fmt.Sprintf("%s %s %-4s %-30.30s %s", label, g, t.ID, desc, meta)
+			rows[i] = selStyle.Render(padRight(plain, cw))
+		} else {
+			left := fmt.Sprintf("%-4s %-30.30s", t.ID, desc)
+			rows[i] = dimStyle.Render(label) + " " +
+				lipgloss.NewStyle().Foreground(gc).Render(g) + " " +
+				lipgloss.NewStyle().Foreground(ProjectColor(t.Project)).Render(left) + " " +
+				dimStyle.Render(meta)
+		}
+	}
+	maxRows := 200
+	if m.height > 8 {
+		maxRows = m.height - 8 // leave room for header, borders, footer
+	}
+	rows = windowRows(rows, m.pick.sel, maxRows)
+	return strings.Join(rows, "\n")
+}
+
 // helpOverlay is the full keymap, shown when ? is pressed.
 func (m Model) helpOverlay() string {
 	rows := [][2]string{
@@ -709,6 +758,7 @@ func (m Model) helpOverlay() string {
 		{"Tab / Shift+Tab", "cycle panels (same as l / h)"},
 		{"1 / 2 / 3 / 4", "jump straight to Projects / Tasks / Timeline / Pending"},
 		{"j / k", "move the selection in the focused panel"},
+		{"J", "quick task picker: press a row's label (1-9 then a-z) to jump within the focused day's tasks"},
 		{"g / G", "jump to first / last"},
 		{"Ctrl+d / Ctrl+u", "half-page down / up"},
 		{"← / →", "previous / next day (from any panel)"},
@@ -742,7 +792,7 @@ func (m Model) helpOverlay() string {
 		{"a / m", "amend description / move (⇥ completes project)"},
 		{"n", "add a note (log) to the selected task"},
 		{"#", "edit tags (space-separated; -tag removes; ⇥ completes a known tag)"},
-		{"o", "carry over (continue) a past day's task today — copies desc + project + tags to a new id"},
+		{"o / O", "carry over (continue) a past day's task today — copies desc + project + tags to a new id (O prompts for a start time)"},
 		{"x / X", "cancel (void) — destructive · X also prompts for a time"},
 		{"u", "undo the last logged event on the focused day"},
 		{"", "on a past day, actions prompt for a time first"},
