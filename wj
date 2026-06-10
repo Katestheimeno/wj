@@ -1111,6 +1111,18 @@ cmd_sync() {
     fi
 }
 
+# After a first-init merge against a populated remote, auto-resolve the only
+# conflict wj owns: .gitattributes (keep ours — it carries the union rule).
+# Append-only *.tsv are union-merged and never conflict; any other clashing file
+# is foreign data we won't guess on, so we bail (non-zero) and let the caller abort.
+sync_resolve_init_conflicts() {
+    local f
+    while IFS= read -r f; do
+        [[ $f == .gitattributes ]] || return 1
+    done < <(_git diff --name-only --diff-filter=U 2>/dev/null)
+    _git checkout --ours -- .gitattributes 2>/dev/null && _git add -- .gitattributes
+}
+
 # wj sync init [remote]: make the data dir a git repo, install the union merge
 # rule, stamp legacy files, and (if a remote is given) wire it up + first sync.
 sync_init() {
@@ -1128,9 +1140,31 @@ sync_init() {
     if [[ -n $remote ]]; then
         if _git remote get-url origin >/dev/null 2>&1; then _git remote set-url origin "$remote"
         else _git remote add origin "$remote"; fi
-        if _git ls-remote --exit-code origin >/dev/null 2>&1; then   # remote has history → merge it
-            _git fetch -q origin || die "sync init: cannot reach $remote"
-            _git pull --rebase --allow-unrelated-histories origin "$br" >/dev/null 2>&1 || true
+        if _git ls-remote --exit-code origin >/dev/null 2>&1; then   # remote has history → merge it in
+            local rbr
+            _git fetch -q origin || die "sync init: cannot reach $remote (check the URL and your auth)"
+            # integrate origin's matching branch, else its default branch
+            if _git rev-parse --verify -q "refs/remotes/origin/$br" >/dev/null; then rbr=$br
+            else rbr=$(_git ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2);print $2;exit}'); fi
+            [[ -n $rbr ]] || rbr=$br
+            # align the local branch to the remote's name so we don't land the merge
+            # on a stray branch (e.g. local 'master' vs the remote's 'main').
+            if [[ $br != "$rbr" ]]; then
+                if _git rev-parse -q --verify HEAD >/dev/null 2>&1; then _git branch -m "$rbr"
+                else _git symbolic-ref HEAD "refs/heads/$rbr"; fi
+                br=$rbr
+            fi
+            # merge (not rebase): with no common ancestor the union driver — already
+            # committed above — keeps *both* sides of every *.tsv instead of conflicting.
+            if ! _git merge --allow-unrelated-histories --no-edit -q "origin/$rbr" >/dev/null 2>&1; then
+                if sync_resolve_init_conflicts; then
+                    _git commit --no-edit -q || die "sync init: could not finish merging remote history"
+                else
+                    local clash; clash=$(_git diff --name-only --diff-filter=U 2>/dev/null | paste -sd' ' -)
+                    _git merge --abort >/dev/null 2>&1 || true
+                    die "sync init: the remote already has files that clash with your local data ($clash). Resolve by hand, then re-run: cd $WJ_DATA_DIR && git merge --allow-unrelated-histories origin/$rbr"
+                fi
+            fi
         fi
         _git push -u origin "$br" || die "sync init: push failed (check the remote URL and your auth)"
         printf 'sync ready in %s (remote: %s)\n' "$WJ_DATA_DIR" "$remote"

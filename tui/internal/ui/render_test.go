@@ -1016,6 +1016,57 @@ func TestParseStartInput(t *testing.T) {
 	}
 }
 
+func TestLeadingTaskID(t *testing.T) {
+	cases := map[string]string{
+		"T3  09:30  [proj]  started T3 — desc": "T3",
+		"T12 10:00 [a] started T12 — x":        "T12",
+		"T1  already completed":                "T1",
+		"":                                     "",
+		"started a thing":                      "", // no leading id
+		"Tx not a number":                      "",
+		"committed locally (no remote)":        "",
+	}
+	for in, want := range cases {
+		if got := leadingTaskID(in); got != want {
+			t.Errorf("leadingTaskID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A start armed with focusNewTask must turn the CLI's confirmation line into a
+// jumpTaskID, then select that task once the reloaded grid lands.
+func TestStartFocusesNewTask(t *testing.T) {
+	m := sampleModel()
+	m.focusNewTask = true
+	m, _ = mustModel(m.Update(mutationMsg{note: "T2  09:30  [backend]  started T2 — new work"}))
+	if m.jumpTaskID != "T2" {
+		t.Fatalf("a start note should arm jumpTaskID=T2, got %q", m.jumpTaskID)
+	}
+	if m.focusNewTask {
+		t.Error("focusNewTask must be cleared after the mutation is handled")
+	}
+	// the freshly reloaded day's grid lands → the new task becomes the selection
+	day := m.currentDay()
+	m, _ = mustModel(m.Update(gridMsg{day: day, g: &wj.Grid{Date: day,
+		Tasks: []wj.GridTask{{ID: "T1", Project: "backend"}, {ID: "T2", Project: "backend"}}}}))
+	if m.jumpTaskID != "" {
+		t.Error("jumpTaskID should clear after landing")
+	}
+	if m.selectedTaskID() != "T2" {
+		t.Errorf("grid landing should select the new task, got %q", m.selectedTaskID())
+	}
+}
+
+// A mutation that wasn't armed (focusNewTask false) must not hijack the
+// selection, even if its note happens to start with a task id.
+func TestUnarmedMutationDoesNotJump(t *testing.T) {
+	m := sampleModel()
+	m, _ = mustModel(m.Update(mutationMsg{note: "T1  09:30  paused"}))
+	if m.jumpTaskID != "" {
+		t.Errorf("an unarmed mutation must not arm a jump, got %q", m.jumpTaskID)
+	}
+}
+
 func TestLayoutNeverOverflowsShortTerminal(t *testing.T) {
 	m := drilled()
 	for i := 0; i < 30; i++ {

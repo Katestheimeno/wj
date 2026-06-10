@@ -131,8 +131,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.grid = msg.g
-		if m.jumpTaskID != "" { // a search jump is landing on this day
-			for i, t := range m.grid.Tasks {
+		if m.jumpTaskID != "" { // a search jump or freshly started task lands on this day
+			for i, t := range m.filteredTasks() { // index into the list selTask addresses
 				if t.ID == m.jumpTaskID {
 					m.selTask = i
 					break
@@ -170,7 +170,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Collapse whitespace so any multi-line reply stays a single
 			// footer line and can't break the fixed-height footer.
 			m.notice = strings.Join(strings.Fields(msg.note), " ")
+			// a freshly started task: its id leads the confirmation line, so
+			// arm jumpTaskID to select it once the reloaded grid lands.
+			if m.focusNewTask {
+				if id := leadingTaskID(msg.note); id != "" {
+					m.jumpTaskID = id
+				}
+			}
 		}
+		m.focusNewTask = false
 		// reload regardless: even on a CLI error the log may have changed
 		return m, m.reloadAll()
 
@@ -732,6 +740,9 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.keepPrompt(hint)
 			}
 			m.closeInput()
+			if proj == "" {
+				proj = m.projectFilter() // inherit the Projects-panel selection ("" = All)
+			}
 			args := []string{desc}
 			if proj != "" {
 				args = append(args, "--project", proj)
@@ -739,6 +750,7 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if at != "" {
 				args = append(args, "--at", at)
 			}
+			m.focusNewTask = true // select the new task once the grid reloads
 			return m.issueMutation("start", args)
 		case "amend":
 			if val == "" {
@@ -853,7 +865,8 @@ func (m Model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.cursor = len([]rune(m.input.value)) // autocomplete lands the caret at the end
 		return m, nil
 	case tea.KeyEsc, tea.KeyCtrlC:
-		m.closeInput() // deliberate abort — silent, but clears any hint
+		m.closeInput()         // deliberate abort — silent, but clears any hint
+		m.focusNewTask = false // a start aborted at the past-day time prompt must not arm the next mutation
 		return m, nil
 	case tea.KeyLeft:
 		if m.input.cursor > 0 {
@@ -1375,4 +1388,19 @@ func parseStartInput(s string) (desc, project, at string) {
 		}
 	}
 	return strings.Join(words, " "), project, at
+}
+
+// leadingTaskID pulls the "T<n>" id that begins a start confirmation line
+// (e.g. "T3  09:30  [proj]  started T3 — desc"), or "" if the note isn't one.
+func leadingTaskID(note string) string {
+	f := strings.Fields(note)
+	if len(f) == 0 || len(f[0]) < 2 || f[0][0] != 'T' {
+		return ""
+	}
+	for _, c := range f[0][1:] {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return f[0]
 }

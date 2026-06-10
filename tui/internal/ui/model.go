@@ -221,7 +221,8 @@ type Model struct {
 	confirm       confirmMode
 	search        searchMode
 	pick          pickMode
-	jumpTaskID    string // a search result to select once its day's grid loads
+	jumpTaskID    string // a search result (or freshly started task) to select once its day's grid loads
+	focusNewTask  bool   // the next mutation is a `start`; select the task it creates
 	showHelp      bool
 	err           string
 	notice        string // transient confirmation/no-op feedback from a mutation
