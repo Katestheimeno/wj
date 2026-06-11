@@ -15,7 +15,7 @@
 #
 set -uo pipefail
 
-WJ_VERSION="0.12.25"
+WJ_VERSION="0.12.26"
 
 # ---------------------------------------------------------------------------
 # Defaults (overridable in the config file)
