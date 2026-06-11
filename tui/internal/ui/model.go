@@ -463,6 +463,14 @@ func (m Model) selectedToday() bool {
 	return m.focusedRow >= 0 && m.focusedRow < len(rows) && rows[m.focusedRow].today
 }
 
+// selectedGanttRow maps the Projects selection to an index into m.g.Rows, or <0
+// when it sits on a Today row or the "All" entry. The gantt rows are the
+// windowSection after "All", i.e. projRows index allRow()+1+ri — so the offset
+// is allRow()+1, not a bare 1 (which only held before a Today section existed).
+func (m Model) selectedGanttRow() int {
+	return m.focusedRow - m.allRow() - 1
+}
+
 // projAnchor identifies a selected Projects row by identity (not raw index) so
 // the selection survives reloads that resize the dynamic Today section.
 type projAnchor struct {

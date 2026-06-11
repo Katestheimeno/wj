@@ -73,15 +73,112 @@ func TestEmptyRange(t *testing.T) {
 
 func TestBar(t *testing.T) {
 	// any positive work shows at least one block; zero shows none
-	if got := bar(0, 100, 7, "39"); strings.Contains(got, "█") {
+	if got := bar(0, 100, 7, "39", false); strings.Contains(got, "█") {
 		t.Errorf("zero minutes should render no block, got %q", got)
 	}
-	if got := bar(1, 100, 7, "39"); !strings.Contains(got, "█") {
+	if got := bar(1, 100, 7, "39", false); !strings.Contains(got, "█") {
 		t.Errorf("tiny work should render a sliver, got %q", got)
 	}
 	// every cell is exactly width-wide once color codes are stripped
-	if w := len([]rune(stripANSI(bar(50, 100, 7, "39")))); w != 7 {
+	if w := len([]rune(stripANSI(bar(50, 100, 7, "39", false)))); w != 7 {
 		t.Errorf("bar width = %d, want 7", w)
+	}
+	// a running bar keeps its width but caps the leading edge with the chevron
+	// (ascii fallback in tests) instead of a full block
+	run := stripANSI(bar(100, 100, 7, "39", true))
+	if w := len([]rune(run)); w != 7 {
+		t.Errorf("running bar width = %d, want 7", w)
+	}
+	if !strings.HasSuffix(strings.TrimRight(run, " "), pickGlyph(">", "►")) {
+		t.Errorf("running bar should end in the chevron tip, got %q", run)
+	}
+}
+
+// In the Day panel an in-progress task's bar tapers to a chevron; a settled
+// (completed/paused) task stays a flat rectangle.
+func TestRenderDayTapersRunningTask(t *testing.T) {
+	m := sampleModel()
+	m.pane = paneDay
+	m.grid = &wj.Grid{
+		Date: "2026-06-10", ShiftStart: "09:00", ShiftEnd: "19:00", Now: "12:00",
+		Tasks: []wj.GridTask{
+			{ID: "T1", Project: "backend", Status: "in-progress", Minutes: 180,
+				Segments: []wj.Segment{{From: "09:00", To: "12:00"}}},
+			{ID: "T2", Project: "meetings", Status: "completed", Minutes: 60,
+				Segments: []wj.Segment{{From: "13:00", To: "14:00"}}},
+		},
+	}
+	chevron := pickGlyph(">", "►")
+	var t1, t2 string
+	for _, ln := range strings.Split(stripANSI(m.renderDay(80, 20)), "\n") {
+		switch {
+		case strings.Contains(ln, "T1"):
+			t1 = ln
+		case strings.Contains(ln, "T2"):
+			t2 = ln
+		}
+	}
+	if !strings.Contains(t1, chevron) {
+		t.Errorf("running T1 bar should carry the chevron tip: %q", t1)
+	}
+	if strings.Contains(t2, chevron) {
+		t.Errorf("completed T2 bar must stay a flat rectangle: %q", t2)
+	}
+}
+
+// In the Range panel only today's cell of a currently-running project is
+// tipped; a non-running project's row (and past cells) stay flat.
+func TestRenderRangeTipsRunningProjectToday(t *testing.T) {
+	m := sampleModel() // by project; rows backend + meetings; days 05-28..06-01
+	m.today = "2026-06-01"
+	m.live = &wj.Status{Date: "2026-06-01", Tasks: []wj.Task{
+		{ID: "T1", Project: "backend", Status: "in-progress", Minutes: 60},
+	}}
+	chevron := pickGlyph(">", "►")
+	var backend, meetings string
+	for _, ln := range strings.Split(stripANSI(m.renderRange(80, 20)), "\n") {
+		switch {
+		case strings.Contains(ln, "backend"):
+			backend = ln
+		case strings.Contains(ln, "meetings"):
+			meetings = ln
+		}
+	}
+	if !strings.Contains(backend, chevron) {
+		t.Errorf("running backend should tip its today cell: %q", backend)
+	}
+	if strings.Contains(meetings, chevron) {
+		t.Errorf("non-running meetings must stay a flat rectangle: %q", meetings)
+	}
+}
+
+// The gantt-row index the Range panel highlights must account for the Today
+// section: selecting a Today/All row maps to <0 (no gantt highlight), and the
+// first gantt project maps to index 0 regardless of how many Today rows precede.
+func TestSelectedGanttRowOffset(t *testing.T) {
+	// liveModel has a 2-row Today section, so allRow()==2.
+	live := liveModel()
+	for focused, want := range map[int]int{
+		0: -3, // today backend  → no gantt row
+		1: -2, // today frontend → no gantt row
+		2: -1, // the "All" entry → no gantt row
+		3: 0,  // first gantt project (backend)
+		4: 1,  // second gantt project (meetings)
+	} {
+		live.focusedRow = focused
+		if got := live.selectedGanttRow(); got != want {
+			t.Errorf("live focusedRow=%d → selectedGanttRow %d, want %d", focused, got, want)
+		}
+	}
+	// Without a Today section (allRow()==0) the mapping is the legacy one:
+	// "All" at 0 → -1, the first gantt project at 1 → 0.
+	plain := sampleModel()
+	if got := plain.selectedGanttRow(); got != -1 { // focusedRow 0 = All
+		t.Errorf("no-Today All row → %d, want -1", got)
+	}
+	plain.focusedRow = 1
+	if got := plain.selectedGanttRow(); got != 0 {
+		t.Errorf("no-Today first gantt row → %d, want 0", got)
 	}
 }
 
@@ -877,6 +974,33 @@ func TestSearchOpenAndJump(t *testing.T) {
 	}
 	if m.selectedTaskID() != "T2" {
 		t.Errorf("grid landing should select the jumped task, got %q", m.selectedTaskID())
+	}
+}
+
+// With a Today section present, jumping to a search hit must clear the project
+// filter (index 0 is a Today row, not "All"), so a hit in another project is
+// still found and selected rather than filtered out.
+func TestSearchJumpClearsFilterWithTodaySection(t *testing.T) {
+	m := liveModel() // Today section → allRow()==2, today 2026-06-01
+	m.search = searchMode{active: true}
+	m, _ = mustModel(m.Update(searchMsg{query: "", results: []wj.Found{
+		{ID: "T7", Date: "2026-06-01", Project: "frontend", Desc: "x", Status: "completed", Minutes: 10},
+	}}))
+	m, _ = mustModel(m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})) // jump
+	if got := m.focusedRow; got != m.allRow() {
+		t.Fatalf("jump should park focus on the All row (%d), got %d", m.allRow(), got)
+	}
+	// the gantt reload re-anchors; an All anchor resolves back to no filter
+	m, _ = mustModel(m.Update(ganttMsg{g: m.g}))
+	if pf := m.projectFilter(); pf != "" {
+		t.Fatalf("jump must clear the project filter, got %q", pf)
+	}
+	// the hit day's grid lands → the frontend task is found despite backend Today rows
+	day := m.currentDay()
+	m, _ = mustModel(m.Update(gridMsg{day: day, g: &wj.Grid{Date: day,
+		Tasks: []wj.GridTask{{ID: "T1", Project: "backend"}, {ID: "T7", Project: "frontend"}}}}))
+	if m.selectedTaskID() != "T7" {
+		t.Errorf("jumped task should be selected after the filter clears, got %q", m.selectedTaskID())
 	}
 }
 

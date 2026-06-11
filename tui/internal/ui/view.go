@@ -774,7 +774,7 @@ func (m Model) helpOverlay() string {
 		{"M", "Tasks + Pending: toggle mine-only vs everyone (shared journal)"},
 		{"", "selecting a project filters the day's Tasks"},
 		{"", "selecting a Today-section project also jumps to today"},
-		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden"},
+		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden / custom"},
 		{"z", "zoom: maximize the focused panel full-screen (esc/z to exit)"},
 		{"Ctrl+R", "reload everything from disk"},
 		{"~Pending (backlog panel)", ""},
@@ -1094,23 +1094,40 @@ func (m Model) renderRange(innerW, maxBody int) string {
 	}
 	header += "  " + dimStyle.Render("TOTAL")
 
+	// rows whose live entry is in-progress today get a chevron on the today
+	// column only — a past day can never be "running". Keyed by project (--by
+	// project) or task id (--by task) so the tip lands on exactly the live row.
+	runningProj, runningID := map[string]bool{}, map[string]bool{}
+	for _, t := range m.myTasks() {
+		if t.Status == "in-progress" {
+			runningProj[t.Project], runningID[t.ID] = true, true
+		}
+	}
+	byTask := m.by == "task"
+
+	selRow := m.selectedGanttRow() // <0 when the Projects cursor is on Today/All
+
 	rows := make([]string, len(m.g.Rows))
 	for ri, row := range m.g.Rows {
 		color := ProjectColor(rowProject(row)) // stable per-project hue, even in --by task
 		label := padRight(row.Label, lw)
-		if ri == m.focusedRow-1 {
+		if ri == selRow {
 			label = selStyle.Render(label)
 		} else {
 			label = lipgloss.NewStyle().Foreground(color).Render(label)
 		}
+		running := runningProj[rowProject(row)]
+		if byTask {
+			running = runningID[row.Key]
+		}
 		line := label
 		for _, d := range m.g.Days {
-			line += bar(row.PerDay[d], max, dw, color)
+			line += bar(row.PerDay[d], max, dw, color, running && d == m.today)
 		}
 		rows[ri] = line + "  " + fmtDur(row.TotalMinutes)
 	}
 
-	rows = windowRows(rows, max2(0, m.focusedRow-1), maxBody-1) // 1 = header
+	rows = windowRows(rows, max2(0, selRow), maxBody-1) // 1 = header
 
 	return header + "\n" + strings.Join(rows, "\n")
 }
@@ -1164,12 +1181,21 @@ func (m Model) renderDay(innerW, maxBody int) string {
 		for i := range cells {
 			cells[i] = ' '
 		}
+		lastFilled := -1
 		for _, seg := range t.Segments {
 			a := clamp((hm(seg.From)-start)*axisW/span, 0, axisW)
 			z := clamp((hm(seg.To)-start)*axisW/span, 0, axisW)
 			for i := a; i < z; i++ {
 				cells[i] = '█'
 			}
+			if z > a && z-1 > lastFilled { // rightmost genuinely-filled cell
+				lastFilled = z - 1
+			}
+		}
+		// a running task's bar tapers to a chevron at its leading edge; any
+		// settled state (paused, completed, deferred, …) stays a flat rectangle.
+		if t.Status == "in-progress" && lastFilled >= 0 {
+			cells[lastFilled] = []rune(pickGlyph(">", "►"))[0]
 		}
 		barStr := lipgloss.NewStyle().Foreground(color).Render(string(cells))
 		glyph, gc := statusGlyph(t.Status)
@@ -1285,8 +1311,10 @@ func (m Model) maxCell() int {
 	return max
 }
 
-// bar renders a single intensity cell scaled to max, in the given color.
-func bar(minutes, max, width int, color lipgloss.Color) string {
+// bar renders a single intensity cell scaled to max, in the given color. When
+// tip is set (a live, in-progress entry) the leading edge tapers to a chevron
+// instead of a flat block, matching the Day panel's running marker.
+func bar(minutes, max, width int, color lipgloss.Color, tip bool) string {
 	if minutes <= 0 || max <= 0 {
 		return strings.Repeat(" ", width)
 	}
@@ -1297,7 +1325,11 @@ func bar(minutes, max, width int, color lipgloss.Color) string {
 	if filled > width {
 		filled = width
 	}
-	fill := lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("█", filled))
+	blocks := strings.Repeat("█", filled)
+	if tip { // running: cap the rightmost cell with the chevron
+		blocks = strings.Repeat("█", filled-1) + pickGlyph(">", "►")
+	}
+	fill := lipgloss.NewStyle().Foreground(color).Render(blocks)
 	return fill + strings.Repeat(" ", width-filled)
 }
 

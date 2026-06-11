@@ -1071,8 +1071,8 @@ func (m Model) jumpToResult() (tea.Model, tea.Cmd) {
 		m.from = t.AddDate(0, 0, -6).Format(dateLayout) // a 7-day window ending on the hit
 		m.to = r.Date
 	}
-	m.focusInit = false // re-default focus to the last day (the hit's day)
-	m.focusedRow = 0    // clear any project filter so the task is visible
+	m.focusInit = false       // re-default focus to the last day (the hit's day)
+	m.focusedRow = m.allRow() // the "All" row, so the gantt reload re-anchors to no filter (index 0 is a Today row once today has events)
 	m.jumpTaskID = r.ID
 	m.pane = paneTimeline
 	return m, m.loadGantt()

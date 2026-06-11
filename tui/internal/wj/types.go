@@ -47,11 +47,12 @@ type Event struct {
 // Grid mirrors `wj grid --json`: intraday active segments per task, used by the
 // single-day drill-down view.
 type Grid struct {
-	Date       string     `json:"date"`
-	ShiftStart string     `json:"shift_start"`
-	ShiftEnd   string     `json:"shift_end"`
-	Now        string     `json:"now"`
-	Tasks      []GridTask `json:"tasks"`
+	Date        string     `json:"date"`
+	ShiftStart  string     `json:"shift_start"`
+	ShiftEnd    string     `json:"shift_end"`
+	SlotMinutes int        `json:"slot_minutes"`
+	Now         string     `json:"now"`
+	Tasks       []GridTask `json:"tasks"`
 }
 
 // GridTask is one task's intraday timeline.

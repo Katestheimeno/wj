@@ -737,6 +737,10 @@ parse_args() {
         AT=$norm
     fi
     [[ -z $ON ]] || valid_date "$ON" || die "--date must be a real date YYYY-MM-DD (got '$ON')"
+    # validate the range bounds too: iter_dates compares lexically, so an unreal
+    # or far-future --to would loop (almost) forever instead of terminating.
+    [[ -z $FROM ]] || valid_date "$FROM" || die "--from must be a real date YYYY-MM-DD (got '$FROM')"
+    [[ -z $TO ]] || valid_date "$TO" || die "--to must be a real date YYYY-MM-DD (got '$TO')"
     # canonicalise the project once so it matches the auto-detected form and is
     # consistent everywhere it is used (as the task's project AND as a scope filter).
     [[ -z $PROJECT_OVERRIDE ]] || PROJECT_OVERRIDE=$(normalize_project "$PROJECT_OVERRIDE")
@@ -884,7 +888,7 @@ cmd_pause() {
     local ts file proj id reason
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; reason=${ARGS[*]:1}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" active "$proj"); reason=${ARGS[*]:-}; fi
     [[ -n $id ]] || die "no in-progress task${PROJECT_OVERRIDE:+ in $proj} to pause"
     in_status "$file" "$id" paused && { printf '%s  already paused\n' "$id"; return 0; }
@@ -896,7 +900,7 @@ cmd_resume() {
     local ts file proj id
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" resumable "$proj"); fi
     [[ -n $id ]] || die "no paused/deferred task to resume"
     in_status "$file" "$id" in-progress && { printf '%s  already in-progress\n' "$id"; return 0; }
@@ -914,7 +918,7 @@ cmd_defer() {
     local ts file proj id reason
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; reason=${ARGS[*]:1}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" active "$proj"); reason=${ARGS[*]:-}; fi
     [[ -n $id ]] || die "no task to defer (give a task id)"
     in_status "$file" "$id" deferred && { printf '%s  already deferred\n' "$id"; return 0; }
@@ -928,7 +932,7 @@ cmd_log() {
     # an explicit task id (T#) targets that task; otherwise the running one. A
     # qualified teammate id (alice/T#) is read-only, like the other mutators.
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; note=${ARGS[*]:1}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" active "$proj"); note=${ARGS[*]:-}; fi
     [[ -n $note ]] || die "log needs a note"
     [[ -n $id ]] || die "no active task to log against (give a task id)"
@@ -940,7 +944,7 @@ cmd_amend() {
     local ts file proj id desc
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; desc=${ARGS[*]:1}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" active "$proj"); desc=${ARGS[*]:-}; fi
     [[ -n $id ]] || die "no task to amend (give a task id)"
     [[ -n $desc ]] || die "amend needs a new description"
@@ -952,7 +956,7 @@ cmd_move() {
     local ts file proj id newproj oldproj
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}; newproj=${ARGS[*]:1}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" active "$proj"); newproj=${ARGS[*]:-}; fi
     [[ -n $id ]] || die "no task to move (give a task id)"
     [[ -n $newproj ]] || die "move needs a target project"
@@ -976,7 +980,7 @@ _tag_op() {
     ts=$(now_ts); file=$(day_file "${ts:0:10}")
     id=${ARGS[0]:-}
     [[ $id =~ ^T[0-9]+$ ]] || die "$evt needs a task id (e.g. wj $evt T1 billing)"
-    task_exists "$file" "$id" || die "no such task today: $id"
+    task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     (( ${#ARGS[@]} >= 2 )) || die "$evt needs at least one tag (e.g. wj $evt $id urgent)"
     norm=""
     for t in "${ARGS[@]:1}"; do
@@ -995,7 +999,7 @@ cmd_cancel() {
     local ts file proj id
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" active "$proj"); fi
     [[ -n $id ]] || die "no task to cancel (give a task id)"
     in_status "$file" "$id" cancelled && { printf '%s  already cancelled\n' "$id"; return 0; }
@@ -1006,27 +1010,37 @@ cmd_cancel() {
 # undo the most recent logged event on a day (today, or --date) by dropping the
 # day file's last line. The event log is append-only, so this is a literal "take
 # back the last thing I recorded" — start/pause/resume/complete/defer/cancel/
-# amend/move/log all become undoable, one step at a time. Note: `continue` writes
-# two events (a start + a lineage note), so undoing it takes two presses.
+# amend/move/log all become undoable, one step at a time. A start/resume that
+# auto-paused another task wrote that pause immediately before it (same
+# timestamp), so undo drops both — otherwise it would orphan the auto-pause.
+# (`continue` interleaves a lineage note/tags, so undoing a carry-over still
+# takes a couple of presses.)
 cmd_undo() {
-    local d=${ON:-$TODAY} file last ts id proj evt note tmp
+    local d=${ON:-$TODAY} file last ts id proj evt note tmp drop=1 extra=""
     file=$(day_actor_file "$d")   # undo your own last event (your write file)
     [[ -s $file ]] || die "nothing to undo on $d"
     last=$(tail -n 1 "$file")
     [[ -n $last ]] || die "nothing to undo on $d"
+    IFS=$'\t' read -r ts id proj evt note <<<"$last"
+    if [[ $evt == start || $evt == resume ]]; then   # the verbs that may auto-pause
+        local pts pid pproj pevt pnote
+        IFS=$'\t' read -r pts pid pproj pevt pnote <<<"$(tail -n 2 "$file" | head -n 1)"
+        if [[ $pevt == pause && $pts == "$ts" && $pnote == "auto-paused ("* ]]; then
+            drop=2; extra=" (and auto-pause of $pid)"
+        fi
+    fi
     tmp=$(mktemp "${file}.XXXX") || die "undo: cannot create a temp file"
-    sed '$d' "$file" >"$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; die "undo: failed to rewrite $file"; }
+    head -n -"$drop" "$file" >"$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; die "undo: failed to rewrite $file"; }
     [[ -s $file ]] || rm -f "$file"          # drop an emptied day file
     _R_FILE="__stale__"                       # invalidate the replay cache
-    IFS=$'\t' read -r ts id proj evt note <<<"$last"
-    printf '%s  %s  undid %s%s\n' "$id" "${ts:11:5}" "$evt" "${note:+ — $note}"
+    printf '%s  %s  undid %s%s%s\n' "$id" "${ts:11:5}" "$evt" "${note:+ — $note}" "$extra"
 }
 
 cmd_complete() {
     local ts file proj id
     ts=$(now_ts); file=$(day_file "${ts:0:10}"); proj=$PROJECT_OVERRIDE
     if [[ ${ARGS[0]:-} =~ ^T[0-9]+$ ]]; then id=${ARGS[0]}
-        task_exists "$file" "$id" || die "no such task today: $id"
+        task_exists "$file" "$id" || die "no such task on ${ON:-$TODAY}: $id"
     else id=$(find_task "$file" active "$proj"); fi
     [[ -n $id ]] || die "no in-progress task${PROJECT_OVERRIDE:+ in $proj} to complete"
     in_status "$file" "$id" completed && { printf '%s  already completed\n' "$id"; return 0; }
@@ -1057,10 +1071,15 @@ _git() {
 }
 
 # the union merge driver makes git keep *all* lines when the same file is touched
-# from two machines — exactly right for an append-only log.
+# from two machines — exactly right for an append-only log. The pending backlog
+# files are the exception: drop/reorder rewrite them in place, so union would
+# resurrect dropped items or duplicate reordered ones across a sync. Exclude them
+# (a later pattern wins) so they fall back to a normal 3-way merge that surfaces a
+# real conflict instead of silently corrupting the backlog.
 sync_write_gitattributes() {
     local ga="$WJ_DATA_DIR/.gitattributes"
-    grep -qs 'merge=union' "$ga" 2>/dev/null || printf '*.tsv merge=union\n' >>"$ga"
+    grep -qsF '*.tsv merge=union' "$ga" || printf '*.tsv merge=union\n' >>"$ga"
+    grep -qsF 'pending.*.tsv -merge' "$ga" || printf 'pending.*.tsv -merge\npending.tsv -merge\n' >>"$ga"
 }
 
 # stamp ownership on any legacy DD.tsv by renaming it to DD.<actor>.tsv, so a
