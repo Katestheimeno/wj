@@ -28,7 +28,7 @@ func main() {
 		bin      = flag.String("wj", "", "path to the wj binary (default: wj on PATH)")
 		accent   = flag.String("accent", "", "border/header color: 256-color code, hex (#rrggbb), or name (default: purple)")
 		colors   = flag.String("colors", "", "per-panel title colors, e.g. \"projects=39,timeline=#888888\"")
-		layout   = flag.String("layout", "", "panel layout: balanced | spotlight | golden | custom (default: balanced)")
+		layout   = flag.String("layout", "", "layout topology: balanced | spotlight(=rail) | golden(=dashboard) | triptych | quadrant | custom (default: balanced)")
 		sidebar  = flag.String("sidebar", "", "sidebar side: left | right (default: left)")
 		layoutW  = flag.String("layout-sidebar", "", "custom layout sidebar width percent, e.g. 28")
 		layoutS  = flag.String("layout-split", "", "custom layout panel weights focused,hi,lo, e.g. 60,25,15")

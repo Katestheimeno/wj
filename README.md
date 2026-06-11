@@ -311,12 +311,12 @@ need: `cp wj.cfg.example "$(wj config)"`. The keys are also summarized below.
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 | `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
 | `accent` | `141` | `wj-tui`'s border/header color — the focused panel's border. A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
-| `layout` | `balanced` | `wj-tui`'s panel layout: `balanced`, `spotlight` (focused panel dominates), `golden` (wider sidebar, uneven splits), or `custom` (see below). Shift+L cycles them live; on a too-small terminal it auto-falls back to `balanced`. |
+| `layout` | `balanced` | `wj-tui`'s layout **topology** — each a genuinely different arrangement of the same panels: `balanced` (classic sidebar + main column), `spotlight` (a thin navigator rail + one large focused panel; alias `rail`), `golden` (a full-width Range banner over a `lists \| Day \| Timeline` row; alias `dashboard`), `triptych` (three columns `lists \| Range+Day \| Timeline`, for wide terminals), `quadrant` (a 2×2 grid of paired panels), or `custom` (see below). Shift+L cycles them live; on a terminal too small for the chosen topology it auto-falls back to `balanced` so nothing gets crushed. |
 | `sidebar` | `left` | Which side the `wj-tui` lists column sits on: `left` or `right`. |
 | `confirm` | `destructive` | `wj-tui`'s y/n guard before an action: `all` (every action confirms), `destructive` (only `cancel`/void and pending `drop`), or `off` (none — `u` undo is the safety net). |
 | `icons` | `off` | `wj-tui`'s status markers and indicators (the `>`/`=`/`»`/`x` task glyphs, the running-task marker, pause-mode badge, now-marker, scroll/`more` arrows, etc.). `off` keeps everything in a universal ASCII set that renders in any font; `on` uses Nerd-Font icons (needs a [patched font](https://www.nerdfonts.com)). A terminal app can't detect a font's glyphs, so this is an explicit opt-in rather than auto-detection. |
 | `auto_sync` | `5` | `wj-tui`'s background git-sync interval, in **minutes**: how often it runs `wj sync` (pull + push) to share/receive a [shared journal](#collaboration-shared-journal). `0` (or `off`) disables it, leaving the manual `S` key. Only acts once the data dir is a sync repo (`wj sync init`). |
-| `layout_sidebar` / `layout_split` | — | Define a `custom` layout: `layout_sidebar` is the sidebar width percent (e.g. `28`); `layout_split` is the panel weights `focused,hi,lo` (e.g. `60,25,15` — the focused panel gets 60% of its column, the other two split the rest 25:15). Select with `layout=custom`. |
+| `layout_sidebar` / `layout_split` | — | Define a `custom` layout (a `balanced`-topology variant with your own proportions): `layout_sidebar` is the sidebar width percent (e.g. `28`); `layout_split` is the panel weights `focused,hi,lo` (e.g. `60,25,15` — the focused panel gets 60% of its column, the other two split the rest 25:15). Select with `layout=custom`. |
 | `color_projects` / `color_tasks` / `color_pending` / `color_range` / `color_day` / `color_timeline` | `39` / `214` / `170` / `78` / `45` / `180` | `wj-tui`'s per-panel title colors — each panel keeps its own so they stay visually distinct. Same value formats as `accent`. |
 
 Environment overrides:
@@ -432,14 +432,19 @@ arrows, …) are plain ASCII by default so they render in any font; set
 font](https://www.nerdfonts.com) — there's no reliable way for a terminal app to
 detect glyph support, so it's opt-in, and either mode is fully self-consistent).
 
-The panel **layout** is configurable too: `balanced` (the default — the focused
-panel takes ~half its column), `spotlight` (the focused panel dominates, the rest
-shrink to thin strips but never below a readable minimum), or `golden` (a wider
-sidebar and uneven 62/23/15 splits). Set the startup default with `layout=` in
-the config, or press **Shift+L** to cycle them live; on a terminal too small for
-the chosen layout it quietly falls back to `balanced` so nothing gets crushed.
-Define your own proportions with `layout_sidebar` / `layout_split` (a `custom`
-layout), put the lists on the right with `sidebar=right`, and press **`z`** to
+The panel **layout** is configurable too — and these are real *topologies*, not
+just re-proportioned versions of one grid, so each feels distinct while still
+surfacing every panel. `balanced` (the default) is the classic sidebar of lists
+beside a column of visualizations. `spotlight` (alias `rail`) is a thin navigator
+rail — Projects/Tasks/Pending/Timeline — beside one large area showing the focused
+pane in full. `golden` (alias `dashboard`) leads with a full-width Range banner
+over a `lists | Day | Timeline` row. `triptych` is three side-by-side columns
+(`lists | Range+Day | Timeline`) for wide terminals. `quadrant` is a 2×2 grid of
+paired panels. Set the startup default with `layout=` in the config, or press
+**Shift+L** to cycle them live; on a terminal too small for the chosen topology it
+quietly falls back to `balanced` so nothing gets crushed. Define your own
+proportions with `layout_sidebar` / `layout_split` (a `custom` layout — a
+`balanced` variant), put the lists on the right with `sidebar=right`, and press **`z`** to
 zoom the focused panel to full-screen (Esc or `z` again to return — navigation
 still works while zoomed, so the view follows your focus). An empty **Pending**
 backlog collapses to a slim strip so its space goes to the other lists.

@@ -67,20 +67,17 @@ func (m Model) View() string {
 		// maximize the focused pane's content to the full body area
 		body = m.renderZoom(w, bodyH, fill)
 	} else {
-		sideW := clamp(w*m.activeLayout().sidePct/100, 18, 40)
-		if sideW > w-24 {
-			sideW = w - 24
-		}
-		if sideW < 12 {
-			sideW = 12
-		}
-		mainW := w - sideW
-		sb := m.renderSidebar(sideW, bodyH, fill)
-		mn := m.renderMain(mainW, bodyH, fill)
-		if sidebarRight {
-			body = lipgloss.JoinHorizontal(lipgloss.Top, mn, sb)
-		} else {
-			body = lipgloss.JoinHorizontal(lipgloss.Top, sb, mn)
+		switch m.activeLayout().kind {
+		case topoRail:
+			body = m.renderRail(w, bodyH, fill)
+		case topoDashboard:
+			body = m.renderDashboard(w, bodyH, fill)
+		case topoTriptych:
+			body = m.renderTriptych(w, bodyH, fill)
+		case topoQuadrant:
+			body = m.renderQuadrant(w, bodyH, fill)
+		default:
+			body = m.renderTwoCol(w, bodyH, fill)
 		}
 	}
 
@@ -206,6 +203,324 @@ func (m Model) renderFooter(w int) string {
 		b.WriteString(footerStyle.Render(truncate(m.footerLine(), w)))
 	}
 	return b.String()
+}
+
+// renderTwoCol is the classic lazygit-style split: a narrow sidebar of lists
+// (Projects/Tasks/Pending) beside a wide main column of visualizations
+// (Range/Day/Timeline). It is the default and the small-terminal fallback.
+func (m Model) renderTwoCol(w, bodyH int, fill bool) string {
+	sideW := clamp(w*m.activeLayout().sidePct/100, 18, 40)
+	if sideW > w-24 {
+		sideW = w - 24
+	}
+	if sideW < 12 {
+		sideW = 12
+	}
+	mainW := w - sideW
+	sb := m.renderSidebar(sideW, bodyH, fill)
+	mn := m.renderMain(mainW, bodyH, fill)
+	if sidebarRight {
+		return lipgloss.JoinHorizontal(lipgloss.Top, mn, sb)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, sb, mn)
+}
+
+// panelSpec is one of the six content panels, decoupled from where a topology
+// places it: title, signature color, focus state, and a body renderer that
+// takes the inner width and a max row count. The asymmetric topologies build
+// these and lay them out with splitW/splitH, so all six panels stay reachable
+// in every layout (the focused one carries the accent border, as ever).
+type panelSpec struct {
+	title   string
+	color   lipgloss.Color
+	focused bool
+	body    func(innerW, rows int) string
+}
+
+// render draws the spec into a bordered panel of the given width and height.
+// height <= 0 (the !fill case) lets the panel size to its content.
+func (s panelSpec) render(w, h int) string {
+	innerW := w - 4
+	if innerW < 8 {
+		innerW = 8
+	}
+	if h <= 0 {
+		return panel(s.title, s.color, s.body(innerW, 1<<30), s.focused, w, 0)
+	}
+	return panel(s.title, s.color, s.body(innerW, h-3), s.focused, w, h)
+}
+
+// The six panel-spec builders mirror the inline panels of renderSidebar/
+// renderMain so every topology shares one source of titles, colors, and focus.
+
+func (m Model) specProjects() panelSpec {
+	return panelSpec{"Projects", colorProjects, m.pane == paneRange,
+		func(iw, rows int) string { return m.renderProjects(iw, rows) }}
+}
+
+func (m Model) specTasks() panelSpec {
+	title := "Tasks"
+	if d := m.currentDay(); d != "" {
+		title = "Tasks · " + shortDate(d)
+	}
+	return panelSpec{title, colorTasks, m.pane == paneDay,
+		func(iw, rows int) string { return m.renderTasks(iw, rows) }}
+}
+
+func (m Model) specPending() panelSpec {
+	title := "Pending"
+	if n := len(m.visiblePending()); n > 0 {
+		title = fmt.Sprintf("Pending (%d)", n)
+		if m.mineOnly {
+			title += " · mine"
+		}
+	}
+	active := m.pane == panePending
+	return panelSpec{title, colorPending, active,
+		func(iw, rows int) string { return m.renderPending(iw, rows, active) }}
+}
+
+func (m Model) specRange() panelSpec {
+	return panelSpec{"Range", colorRange, m.pane == paneRange,
+		func(iw, rows int) string { return m.rangeBody(iw, rows) }}
+}
+
+func (m Model) specDay() panelSpec {
+	return panelSpec{"Day — " + m.currentDay(), colorDay, m.pane == paneDay,
+		func(iw, rows int) string { return m.renderDay(iw, rows) }}
+}
+
+// specTimeline is the selected task's event timeline. When the Pending pane has
+// focus and the topology has no dedicated Pending-detail slot, callers swap to
+// specPendingDetail instead (see renderTwoCol's main column).
+func (m Model) specTimeline() panelSpec {
+	title := "Timeline"
+	if m.show != nil {
+		title = "Timeline · " + m.show.ID
+	}
+	return panelSpec{title, colorTimeline, m.pane == paneTimeline,
+		func(iw, rows int) string { return m.renderTimeline(iw, rows) }}
+}
+
+func (m Model) specPendingDetail() panelSpec {
+	title := "Pending"
+	if id := m.selectedPendID(); id != "" {
+		title = "Pending · " + id
+	}
+	return panelSpec{title, colorPending, m.pane == panePending,
+		func(iw, rows int) string { return m.renderPendingDetail(iw, rows) }}
+}
+
+// splitN divides total into n parts that sum exactly to total (the remainder
+// goes to the trailing parts, so columns/rows never under- or over-fill).
+func splitN(total, n int) []int {
+	if n < 1 {
+		n = 1
+	}
+	out := make([]int, n)
+	base, rem := total/n, total%n
+	for i := range out {
+		out[i] = base
+		if i >= n-rem { // hand the remainder to the last `rem` parts
+			out[i]++
+		}
+	}
+	return out
+}
+
+// splitW divides total by integer weights, summing exactly to total. A zero or
+// empty weight set falls back to equal parts. Used for column widths and row
+// heights so a multi-panel topology always fills the body precisely.
+func splitW(total int, weights ...int) []int {
+	sum := 0
+	for _, x := range weights {
+		sum += x
+	}
+	if sum <= 0 {
+		return splitN(total, len(weights))
+	}
+	out := make([]int, len(weights))
+	used := 0
+	for i, x := range weights {
+		out[i] = total * x / sum
+		used += out[i]
+	}
+	for i := len(out) - 1; used < total; i = (i - 1 + len(out)) % len(out) { // distribute rounding loss from the end
+		out[i]++
+		used++
+	}
+	return out
+}
+
+// stackSpecs renders specs top-to-bottom into a column of the given width. When
+// fill is true the heights come from `hs` (which must sum to the column height);
+// otherwise each panel sizes to its content.
+func stackSpecs(w int, fill bool, hs []int, specs ...panelSpec) string {
+	parts := make([]string, len(specs))
+	for i, s := range specs {
+		h := 0
+		if fill && i < len(hs) {
+			h = hs[i]
+		}
+		parts[i] = s.render(w, h)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// renderRail (the "spotlight"/"rail" topology) is a thin rail of the four
+// navigator panes — Projects, Tasks, Pending, Timeline — beside one large area
+// showing the focused pane's primary visualization in full. Everything stays
+// reachable: Tab/1-4 move focus (swapping the big area and the highlighted rail
+// entry), and z still zooms. The rail reuses the ordinary list renderers, just
+// in quarter-height slots, so selection-windowing keeps working.
+func (m Model) renderRail(w, bodyH int, fill bool) string {
+	railW := clamp(w*m.activeLayout().sidePct/100, 18, 30)
+	if railW > w-32 {
+		railW = w - 32
+	}
+	if railW < 16 {
+		railW = 16
+	}
+	mainW := w - railW
+
+	railSpecs := []panelSpec{m.specProjects(), m.specTasks(), m.specPending(), m.specTimeline()}
+	var railHs []int
+	if fill {
+		railHs = splitN(bodyH, len(railSpecs))
+	}
+	rail := stackSpecs(railW, fill, railHs, railSpecs...)
+
+	// the big area: the focused pane's primary visualization, full height. The
+	// sidebar↔main pairing holds (Projects↔Range, Tasks↔Day), so highlighting a
+	// rail entry and enlarging its companion visualization stay in sync.
+	var big panelSpec
+	switch m.pane {
+	case paneRange:
+		big = m.specRange()
+	case paneDay:
+		big = m.specDay()
+	case panePending:
+		big = m.specPendingDetail()
+	default:
+		big = m.specTimeline()
+	}
+	bigH := 0
+	if fill {
+		bigH = bodyH
+	}
+	main := big.render(mainW, bigH)
+	if sidebarRight {
+		return lipgloss.JoinHorizontal(lipgloss.Top, main, rail)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, rail, main)
+}
+
+// renderDashboard (the "golden"/"dashboard" topology) leads with the Range
+// gantt as a full-width banner, then a bottom row of a lists column (Projects/
+// Tasks/Pending) beside the Day grid and the Timeline. Overview-first.
+func (m Model) renderDashboard(w, bodyH int, fill bool) string {
+	bannerH, rowH := 0, 0
+	if fill {
+		hs := splitW(bodyH, m.activeLayout().focusNum, m.activeLayout().focusDen-m.activeLayout().focusNum)
+		bannerH, rowH = hs[0], hs[1]
+		if bannerH < 6 {
+			bannerH = 6
+		}
+		if rowH < 6 {
+			rowH = bodyH - bannerH
+		}
+	}
+	banner := m.specRange().render(w, bannerH)
+
+	listW := clamp(w*m.activeLayout().sidePct/100, 20, 40)
+	rest := w - listW
+	ws := splitW(rest, 3, 2) // Day a touch wider than the Timeline
+	dayW, tlW := ws[0], ws[1]
+
+	var listHs []int
+	if fill {
+		listHs = splitN(rowH, 3)
+	}
+	lists := stackSpecs(listW, fill, listHs, m.specProjects(), m.specTasks(), m.specPending())
+	day := m.specDay().render(dayW, rowH)
+	tl := m.specTimeline().render(tlW, rowH)
+	row := lipgloss.JoinHorizontal(lipgloss.Top, lists, day, tl)
+	return lipgloss.JoinVertical(lipgloss.Left, banner, row)
+}
+
+// renderTriptych is three side-by-side columns: a lists column (Projects/Tasks/
+// Pending), a middle column stacking Range over Day, and the Timeline. Built for
+// wide terminals — everything on screen at once.
+func (m Model) renderTriptych(w, bodyH int, fill bool) string {
+	listW := clamp(w*m.activeLayout().sidePct/100, 20, 38)
+	rest := w - listW
+	ws := splitW(rest, 3, 2) // middle (Range+Day) wider than the Timeline
+	midW, tlW := ws[0], ws[1]
+
+	var listHs, midHs []int
+	if fill {
+		listHs = splitN(bodyH, 3)
+		midHs = splitW(bodyH, 1, 1) // Range / Day even
+	}
+	lists := stackSpecs(listW, fill, listHs, m.specProjects(), m.specTasks(), m.specPending())
+	mid := stackSpecs(midW, fill, midHs, m.specRange(), m.specDay())
+	tlH := 0
+	if fill {
+		tlH = bodyH
+	}
+	tl := m.specTimeline().render(tlW, tlH)
+	cols := []string{lists, mid, tl}
+	if sidebarRight { // lists hug the right edge
+		cols = []string{mid, tl, lists}
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+}
+
+// renderQuadrant is a 2×2 grid of paired panels: Projects+Tasks beside Range on
+// top, Pending beside Day+Timeline on the bottom. A command-center view.
+func (m Model) renderQuadrant(w, bodyH int, fill bool) string {
+	ws := splitW(w, m.activeLayout().sidePct, 100-m.activeLayout().sidePct)
+	leftW, rightW := ws[0], ws[1]
+	topH, botH := 0, 0
+	if fill {
+		hs := splitW(bodyH, 1, 1)
+		topH, botH = hs[0], hs[1]
+	}
+
+	var pairHs []int
+	if fill {
+		pairHs = splitW(topH, 1, 1)
+	}
+	tl := stackSpecs(leftW, fill, pairHs, m.specProjects(), m.specTasks()) // top-left pair
+	tr := m.specRange().render(rightW, topH)                               // top-right
+	bl := m.specPending().render(leftW, botH)                              // bottom-left
+	var brHs []int
+	if fill {
+		brHs = splitW(botH, 1, 1)
+	}
+	br := stackSpecs(rightW, fill, brHs, m.specDay(), m.specTimeline()) // bottom-right pair
+
+	top := lipgloss.JoinHorizontal(lipgloss.Top, tl, tr)
+	bot := lipgloss.JoinHorizontal(lipgloss.Top, bl, br)
+	return lipgloss.JoinVertical(lipgloss.Left, top, bot)
+}
+
+// minSize is the smallest (width, height) at which a topology renders without
+// crushing a panel; below it activeLayout falls back to balanced. balanced is
+// exempt (it is the fallback).
+func (lp layoutProfile) minSize() (int, int) {
+	switch lp.kind {
+	case topoRail:
+		return 52, 16
+	case topoDashboard:
+		return 80, 22
+	case topoTriptych:
+		return 104, 22
+	case topoQuadrant:
+		return 88, 20
+	default: // topoTwoCol (custom included)
+		return 64, 18
+	}
 }
 
 // renderSidebar stacks the Projects and Tasks list panels in the left column.
@@ -460,27 +775,58 @@ func (m Model) rangeBody(innerW, maxBody int) string {
 	return m.renderRange(innerW, maxBody)
 }
 
-// layoutProfile parameterizes the panel arrangement: the sidebar width and how
-// each column's height is divided among its three stacked panels. The focused
-// panel gets focusNum/focusDen of the height; the remaining two split the rest
-// by the restHi:restLo weights (so a profile can make them uneven).
+// topoKind is a layout's structural arrangement — its topology, not just its
+// proportions. Each kind draws the same six content panels in a genuinely
+// different shape, so switching layouts (Shift+L) feels distinct rather than
+// merely re-proportioned. topoTwoCol is the original lazygit-style split.
+type topoKind int
+
+const (
+	topoTwoCol    topoKind = iota // sidebar lists | main visualizations (the classic split)
+	topoRail                      // a thin summary rail + one large focused content area
+	topoDashboard                 // a full-width Range banner over a lists | Day | Timeline row
+	topoTriptych                  // three columns: lists | Range+Day | Timeline
+	topoQuadrant                  // a 2×2 grid: Projects+Tasks | Range / Pending | Day+Timeline
+)
+
+// layoutProfile parameterizes a layout: its topology (kind) plus, for the
+// two-column kind, the sidebar width and how each column's height is divided
+// among its three stacked panels. The focused panel gets focusNum/focusDen of
+// the height; the remaining two split the rest by the restHi:restLo weights.
+// The asymmetric topologies use sidePct/focusNum only as gentle biasing hints.
 type layoutProfile struct {
 	name               string
-	sidePct            int // sidebar width as a percent of the terminal width
+	kind               topoKind
+	sidePct            int // sidebar/side-column width as a percent of the terminal width
 	focusNum, focusDen int // focused panel's share of its column height
 	restHi, restLo     int // weights for splitting the rest between the other two
 }
 
 // layouts are the switchable presets (cycled with Shift+L, default set via the
-// config's layout= / -layout). balanced is the original even-ish look.
+// config's layout= / -layout). The three classic names are kept for config
+// back-compat but now each names a distinct topology; "rail"/"dashboard" are
+// accepted as descriptive aliases (see layoutIndex). balanced is the default
+// and the small-terminal fallback for every other layout.
 var layouts = []layoutProfile{
-	{"balanced", 24, 1, 2, 1, 1},   // focused ½, others ¼ each
-	{"spotlight", 22, 7, 10, 1, 1}, // focused dominates (~70%), others thin
-	{"golden", 32, 62, 100, 3, 2},  // wider sidebar, uneven 62 / 23 / 15
+	{"balanced", topoTwoCol, 24, 1, 2, 1, 1},     // sidebar + main; focused ½, others ¼ each
+	{"spotlight", topoRail, 18, 7, 10, 1, 1},     // thin rail + one big focused panel
+	{"golden", topoDashboard, 26, 42, 100, 1, 1}, // full-width Range banner over a 3-up row
+	{"triptych", topoTriptych, 26, 1, 2, 1, 1},   // lists | Range+Day | Timeline
+	{"quadrant", topoQuadrant, 40, 1, 2, 1, 1},   // 2×2 grid of paired panels
 }
 var defaultLayout = 0 // index into layouts; overridden by SetLayout at startup
 
+// layoutAliases maps descriptive names onto the back-compat preset names, so
+// both `layout=spotlight` and `layout=rail` resolve to the rail topology.
+var layoutAliases = map[string]string{
+	"rail":      "spotlight",
+	"dashboard": "golden",
+}
+
 func layoutIndex(name string) int {
+	if alias, ok := layoutAliases[name]; ok {
+		name = alias
+	}
 	for i, lp := range layouts {
 		if lp.name == name {
 			return i
@@ -774,7 +1120,7 @@ func (m Model) helpOverlay() string {
 		{"M", "Tasks + Pending: toggle mine-only vs everyone (shared journal)"},
 		{"", "selecting a project filters the day's Tasks"},
 		{"", "selecting a Today-section project also jumps to today"},
-		{"Shift+L", "cycle the panel layout: balanced / spotlight / golden / custom"},
+		{"Shift+L", "cycle the layout: balanced / spotlight (rail) / golden (dashboard) / triptych / quadrant"},
 		{"z", "zoom: maximize the focused panel full-screen (esc/z to exit)"},
 		{"Ctrl+R", "reload everything from disk"},
 		{"~Pending (backlog panel)", ""},

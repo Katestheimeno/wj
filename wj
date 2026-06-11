@@ -36,7 +36,7 @@ interface="minimal"     # minimal | ui — bare `wj` / `wj ui` launch the wj-tui
 auto_pause="off"        # on | off — on start/resume, auto-pause a running task in
                         # the SAME project. off = run them in parallel (default)
 accent="141"            # wj-tui border/header color: 256-color code, #hex, or name
-layout="balanced"       # wj-tui panel layout: balanced | spotlight | golden | custom (⇧L cycles)
+layout="balanced"       # wj-tui topology: balanced|spotlight|golden|triptych|quadrant|custom (⇧L cycles)
 sidebar="left"          # wj-tui sidebar side: left | right
 confirm="destructive"   # wj-tui y/n guard before actions: all | destructive | off
 icons="off"             # wj-tui status markers: on (Nerd-Font icons) | off (ASCII)
@@ -109,7 +109,7 @@ actor = $actor
 interface = $interface
 # wj-tui focused-panel border/header color: 256-code (141), #hex, or name.
 accent = $accent
-# Panel layout: balanced | spotlight | golden | custom. ⇧L cycles, z zooms.
+# Layout topology: balanced | spotlight(=rail) | golden(=dashboard) | triptych | quadrant | custom. ⇧L cycles, z zooms.
 layout = $layout
 # Which side the lists column sits on: left | right.
 sidebar = $sidebar
@@ -2400,7 +2400,7 @@ CONFIG  (~/.config/wj/cfg — INI [sections], created on first run)
   interface                 bare-wj front-end: minimal | ui          (minimal)
   auto_pause                start/resume auto-pause same project     (off)
   accent                    wj-tui focused-panel border color        (141)
-  layout                    wj-tui panels: balanced|spotlight|golden (balanced)
+  layout                    wj-tui topology: balanced|spotlight|golden|triptych|quadrant (balanced)
   sidebar                   wj-tui sidebar side: left | right        (left)
   confirm                   wj-tui y/n guard: all|destructive|off    (destructive)
   icons                     wj-tui status markers: on|off            (off)

@@ -1278,7 +1278,12 @@ func TestFocusedRowFollowsProjectAcrossReload(t *testing.T) {
 
 func TestLayoutSplit(t *testing.T) {
 	sum := func(s [3]int) int { return s[0] + s[1] + s[2] }
+	// split() drives the two-column topology's vertical division; it must sum and
+	// keep the focused panel largest for every two-column profile.
 	for _, lp := range layouts {
+		if lp.kind != topoTwoCol {
+			continue
+		}
 		got := lp.split(100, 1)
 		if sum(got) != 100 {
 			t.Errorf("%s: split sum = %d, want 100 (%v)", lp.name, sum(got), got)
@@ -1287,21 +1292,105 @@ func TestLayoutSplit(t *testing.T) {
 			t.Errorf("%s: focused panel (idx1) should be the largest: %v", lp.name, got)
 		}
 	}
-	// spotlight emphasises the focused panel harder than balanced
-	if layouts[1].split(100, 1)[1] <= layouts[0].split(100, 1)[1] {
-		t.Error("spotlight focused share should exceed balanced")
-	}
-	// golden leaves its two non-focused panels uneven
-	g := layouts[2].split(100, 1) // focus idx1; others idx0 (hi) and idx2 (lo)
-	if g[0] == g[2] {
-		t.Errorf("golden non-focused panels should be uneven: %v", g)
-	}
 	// a too-short column or no-focus sidebar falls back to thirds, still summing
 	if s := layouts[0].split(9, 1); sum(s) != 9 {
 		t.Errorf("short split sum = %d (%v)", sum(s), s)
 	}
 	if s := layouts[0].sidebarSplit(30, -1); s != [3]int{10, 10, 10} {
 		t.Errorf("sidebar with no focus should be equal thirds, got %v", s)
+	}
+}
+
+// splitN/splitW must partition a total exactly (no under/over-fill), which is
+// what keeps every multi-panel topology filling the body without overflow.
+func TestSplitHelpers(t *testing.T) {
+	tot := func(xs []int) int {
+		s := 0
+		for _, x := range xs {
+			s += x
+		}
+		return s
+	}
+	for _, total := range []int{0, 1, 7, 50, 99, 100, 201} {
+		for _, n := range []int{1, 2, 3, 4} {
+			if got := splitN(total, n); tot(got) != total || len(got) != n {
+				t.Errorf("splitN(%d,%d) = %v (sum %d)", total, n, got, tot(got))
+			}
+		}
+		if got := splitW(total, 3, 2); tot(got) != total {
+			t.Errorf("splitW(%d,3,2) = %v (sum %d, want %d)", total, got, tot(got), total)
+		}
+		if got := splitW(total, 0, 0); tot(got) != total { // zero weights → equal parts
+			t.Errorf("splitW(%d,0,0) = %v (sum %d)", total, got, tot(got))
+		}
+	}
+}
+
+// Every topology must fill the terminal width exactly (no overflow, no gap) and
+// keep all six panels reachable: at a generous size each layout renders every
+// panel title. This is the structural guarantee behind "drastically different
+// yet still shows all the information."
+func TestEveryLayoutRenders(t *testing.T) {
+	titles := []string{"Projects", "Tasks", "Pending", "Range", "Day", "Timeline"}
+	for i, lp := range layouts {
+		// size comfortably above every topology's minSize so none falls back
+		const W, H = 140, 48
+		m := drilled()
+		u, _ := m.Update(tea.WindowSizeMsg{Width: W, Height: H})
+		mm := u.(Model)
+		mm.layout = i
+		if mm.activeLayout().name != lp.name {
+			t.Fatalf("%s: fell back to %s at %dx%d", lp.name, mm.activeLayout().name, W, H)
+		}
+		out := mm.View()
+		maxw := 0
+		for _, ln := range strings.Split(out, "\n") {
+			if w := lipgloss.Width(ln); w > maxw {
+				maxw = w
+			}
+		}
+		if maxw != W {
+			t.Errorf("%s: fills %d cols, want exactly %d", lp.name, maxw, W)
+		}
+		// the rail intentionally foregrounds one panel (others reachable via focus),
+		// so it need not show Range/Day titles at once; the rest show all six.
+		want := titles
+		if lp.kind == topoRail {
+			want = []string{"Projects", "Tasks", "Pending", "Timeline"}
+		}
+		for _, w := range want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: view missing %q panel", lp.name, w)
+			}
+		}
+	}
+}
+
+// Below its minSize a topology falls back to balanced so no panel gets crushed;
+// balanced itself is always honored.
+func TestLayoutFallsBackWhenTiny(t *testing.T) {
+	m := sampleModel()
+	for i, lp := range layouts {
+		m.layout = i
+		m.width, m.height = 40, 12 // smaller than any topology's minSize
+		if got := m.activeLayout().name; got != "balanced" {
+			t.Errorf("%s at 40x12 should fall back to balanced, got %s", lp.name, got)
+		}
+	}
+	m.layout = 0
+	m.width, m.height = 40, 12
+	if got := m.activeLayout().name; got != "balanced" {
+		t.Errorf("balanced must always be honored, got %s", got)
+	}
+}
+
+// The descriptive aliases resolve to their back-compat preset names.
+func TestLayoutAliases(t *testing.T) {
+	if layoutIndex("rail") != layoutIndex("spotlight") {
+		t.Error("rail should alias spotlight")
+	}
+	if layoutIndex("dashboard") != layoutIndex("golden") {
+		t.Error("dashboard should alias golden")
 	}
 }
 
