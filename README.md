@@ -448,8 +448,9 @@ quietly falls back to `balanced` so nothing gets crushed. Define your own
 proportions with `layout_sidebar` / `layout_split` (a `custom` layout — a
 `balanced` variant), put the lists on the right with `sidebar=right`, and press **`z`** to
 zoom the focused panel to full-screen (Esc or `z` again to return — navigation
-still works while zoomed, so the view follows your focus). An empty **Pending**
-backlog collapses to a slim strip so its space goes to the other lists.
+still works while zoomed, so the view follows your focus). In every layout, an
+empty **Pending** backlog collapses to a slim title strip (still focusable) so
+its space goes to the other panels.
 
 Every action echoes the CLI's confirmation in the footer — a cyan `✓` line such
 as `✓ T1 12:30 completed — 1h30m`, or, for an [idempotent](#commands) no-op,

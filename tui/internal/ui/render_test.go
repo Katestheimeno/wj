@@ -1426,6 +1426,92 @@ func TestEveryLayoutFillsWidthSidebarRight(t *testing.T) {
 	}
 }
 
+// collapseEmptyPending shrinks the Pending slot to the slim strip and hands the
+// reclaimed rows to its stack-mates, always preserving the total.
+func TestCollapseEmptyPending(t *testing.T) {
+	sum := func(xs []int) int {
+		s := 0
+		for _, x := range xs {
+			s += x
+		}
+		return s
+	}
+	// Pending (idx 2) collapses to 3; the other two absorb the reclaimed 17 rows.
+	got := collapseEmptyPending([]int{10, 10, 20}, 2)
+	if got[2] != 3 {
+		t.Errorf("pending should collapse to 3, got %d (%v)", got[2], got)
+	}
+	if sum(got) != 40 {
+		t.Errorf("sum must be preserved: got %d (%v)", sum(got), got)
+	}
+	if got[0] <= 10 || got[1] <= 10 {
+		t.Errorf("stack-mates should grow: %v", got)
+	}
+	// last-position Pending (the rail) and already-slim panels are handled too.
+	if r := collapseEmptyPending([]int{8, 8, 6, 9}, 3); r[3] != 3 || sum(r) != 31 {
+		t.Errorf("rail-position collapse: %v (sum %d)", r, sum(r))
+	}
+	if r := collapseEmptyPending([]int{10, 3}, 1); r[1] != 3 || r[0] != 10 {
+		t.Errorf("already-slim pending is left alone: %v", r)
+	}
+	// out-of-range / degenerate indices are no-ops, not panics.
+	if r := collapseEmptyPending([]int{5, 5}, -1); r[0] != 5 || r[1] != 5 {
+		t.Errorf("bad index should be a no-op: %v", r)
+	}
+}
+
+// With an empty backlog, every layout collapses the Pending panel: its title
+// still shows (reachable), but it occupies far fewer rows than when populated,
+// so the freed space goes to the other panels.
+func TestEmptyPendingCollapsesEveryLayout(t *testing.T) {
+	const W, H = 130, 44
+	// rows of the rendered Pending panel: its title line plus the body lines up to
+	// the next panel border. A crude but stable proxy for how tall it is drawn.
+	pendingRows := func(out string) int {
+		lines := strings.Split(out, "\n")
+		start := -1
+		for i, ln := range lines {
+			if strings.Contains(ln, "Pending") {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			return 0
+		}
+		n := 1
+		for i := start + 1; i < len(lines); i++ {
+			// stop at the panel's bottom border (── run) on the Pending column
+			if strings.Contains(lines[i], "╰") || strings.Contains(lines[i], "╭") {
+				break
+			}
+			n++
+		}
+		return n
+	}
+	for i, lp := range layouts {
+		full := drilled()
+		full.pending = []wj.Pending{ // a populated backlog
+			{ID: "P1", Project: "Acme", Due: "2026-06-01", Desc: "Fix invoice"},
+			{ID: "P2", Due: "2026-06-02", Desc: "Call client"},
+			{ID: "P3", Project: "Ideas", Desc: "Write blog"},
+		}
+		empty := drilled() // drilled() has an empty backlog
+		uf, _ := full.Update(tea.WindowSizeMsg{Width: W, Height: H})
+		ue, _ := empty.Update(tea.WindowSizeMsg{Width: W, Height: H})
+		mf, me := uf.(Model), ue.(Model)
+		mf.layout, me.layout = i, i
+		of, oe := mf.View(), me.View()
+		if !strings.Contains(oe, "Pending") {
+			t.Errorf("%s: collapsed Pending must still show its title", lp.name)
+		}
+		if pendingRows(oe) >= pendingRows(of) {
+			t.Errorf("%s: empty Pending (%d rows) should be slimmer than populated (%d rows)",
+				lp.name, pendingRows(oe), pendingRows(of))
+		}
+	}
+}
+
 // Below its minSize a topology falls back to balanced so no panel gets crushed;
 // balanced itself is always honored.
 func TestLayoutFallsBackWhenTiny(t *testing.T) {

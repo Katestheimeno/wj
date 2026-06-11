@@ -352,6 +352,33 @@ func splitW(total int, weights ...int) []int {
 	return out
 }
 
+// pendingEmpty reports whether the visible backlog has no items, so layouts can
+// collapse the Pending panel to a slim title strip rather than leave it hogging
+// space (it stays focusable, so navigation is unaffected).
+func (m Model) pendingEmpty() bool { return len(m.visiblePending()) == 0 }
+
+// collapseEmptyPending shrinks the Pending panel within a stack to a slim title
+// strip and shares the reclaimed rows among its stack-mates. hs and the stack
+// are parallel; pendIdx is Pending's position. The sum is preserved. Callers
+// invoke it only when pendingEmpty() and the layout is filling height.
+func collapseEmptyPending(hs []int, pendIdx int) []int {
+	const slim = 3 // border(2) + title(1): the title strip, no body
+	if pendIdx < 0 || pendIdx >= len(hs) || len(hs) < 2 || hs[pendIdx] <= slim {
+		return hs
+	}
+	share := splitN(hs[pendIdx]-slim, len(hs)-1)
+	hs[pendIdx] = slim
+	j := 0
+	for i := range hs {
+		if i == pendIdx {
+			continue
+		}
+		hs[i] += share[j]
+		j++
+	}
+	return hs
+}
+
 // stackSpecs renders specs top-to-bottom into a column of the given width. When
 // fill is true the heights come from `hs` (which must sum to the column height);
 // otherwise each panel sizes to its content.
@@ -456,6 +483,9 @@ func (m Model) renderRail(w, bodyH int, fill bool) string {
 	var railHs []int
 	if fill {
 		railHs = railHeights(railW, bodyH, railSpecs)
+		if m.pendingEmpty() {
+			railHs = collapseEmptyPending(railHs, 3)
+		}
 	}
 	rail := stackSpecs(railW, fill, railHs, railSpecs...)
 
@@ -539,6 +569,9 @@ func (m Model) renderDashboard(w, bodyH int, fill bool) string {
 	var listHs []int
 	if fill {
 		listHs = splitN(rowH, 3)
+		if m.pendingEmpty() {
+			listHs = collapseEmptyPending(listHs, 2)
+		}
 	}
 	lists := stackSpecs(listW, fill, listHs, m.specProjects(), m.specTasks(), m.specPending())
 	day := m.specDay().render(dayW, rowH)
@@ -562,6 +595,9 @@ func (m Model) renderTriptych(w, bodyH int, fill bool) string {
 	var listHs, midHs []int
 	if fill {
 		listHs = splitN(bodyH, 3)
+		if m.pendingEmpty() {
+			listHs = collapseEmptyPending(listHs, 2)
+		}
 		midHs = splitW(bodyH, 1, 1) // Range / Day even
 	}
 	lists := stackSpecs(listW, fill, listHs, m.specProjects(), m.specTasks(), m.specPending())
@@ -589,25 +625,43 @@ func (m Model) renderQuadrant(w, bodyH int, fill bool) string {
 		topH, botH = hs[0], hs[1]
 	}
 
+	// the right column is the same in both cases: Range over the Day+Timeline pair.
+	tr := m.specRange().render(rightW, topH)
+	var brHs []int
+	if fill {
+		brHs = splitW(botH, 1, 1)
+	}
+	br := stackSpecs(rightW, fill, brHs, m.specDay(), m.specTimeline())
+	joinCols := func(left, right string) string {
+		if sidebarRight { // the lists column hugs the right edge
+			return lipgloss.JoinHorizontal(lipgloss.Top, right, left)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	}
+
+	if fill && m.pendingEmpty() {
+		// empty backlog: Pending has no stack-mate to absorb its cell, so the left
+		// column becomes a tall Projects+Tasks pair with a slim Pending strip
+		// beneath. The right column keeps its rooms — Range/Day/Timeline are
+		// unaffected; only the reclaimed Pending space goes to Projects/Tasks.
+		const slim = 3
+		ph := splitW(bodyH-slim, 1, 1)
+		left := lipgloss.JoinVertical(lipgloss.Left,
+			m.specProjects().render(leftW, ph[0]),
+			m.specTasks().render(leftW, ph[1]),
+			m.specPending().render(leftW, slim))
+		right := lipgloss.JoinVertical(lipgloss.Left, tr, br)
+		return joinCols(left, right)
+	}
+
 	var pairHs []int
 	if fill {
 		pairHs = splitW(topH, 1, 1)
 	}
 	tl := stackSpecs(leftW, fill, pairHs, m.specProjects(), m.specTasks()) // top-left pair
-	tr := m.specRange().render(rightW, topH)                               // top-right
 	bl := m.specPending().render(leftW, botH)                              // bottom-left
-	var brHs []int
-	if fill {
-		brHs = splitW(botH, 1, 1)
-	}
-	br := stackSpecs(rightW, fill, brHs, m.specDay(), m.specTimeline()) // bottom-right pair
-
-	top := lipgloss.JoinHorizontal(lipgloss.Top, tl, tr)
-	bot := lipgloss.JoinHorizontal(lipgloss.Top, bl, br)
-	if sidebarRight { // the lists column (Projects/Tasks, Pending) hugs the right
-		top = lipgloss.JoinHorizontal(lipgloss.Top, tr, tl)
-		bot = lipgloss.JoinHorizontal(lipgloss.Top, br, bl)
-	}
+	top := joinCols(tl, tr)
+	bot := joinCols(bl, br)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bot)
 }
 
@@ -668,12 +722,7 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	// auto-hide an empty backlog: collapse Pending to a slim title strip and give
 	// the reclaimed rows to Projects/Tasks (it stays focusable, so nav is intact).
 	if len(vpend) == 0 {
-		if slim := 3; hs[2] > slim {
-			extra := hs[2] - slim
-			hs[2] = slim
-			hs[0] += extra / 2
-			hs[1] += extra - extra/2
-		}
+		collapseEmptyPending(hs[:], 2) // mutates hs in place via the slice
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		panel("Projects", colorProjects, m.renderProjects(cw, hs[0]-3), m.pane == paneRange, w, hs[0]),
