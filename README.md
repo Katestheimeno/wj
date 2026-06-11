@@ -514,9 +514,10 @@ array), so it drops straight into pandas, `jq`, SQLite, or any spreadsheet.
 wj can be a **shared, multi-author work journal** — over plain **git**, no server.
 It works because the log is append-only and *partitioned by author*: each person
 writes their own per-day file (`YYYY/MM/DD.<actor>.tsv`), and reads union every
-author's file. Two people working the same day never touch the same file, so git
-has nothing to conflict on; a `*.tsv merge=union` rule handles even the
-same-person-on-two-machines case by keeping all events.
+author's file. Two people with **distinct handles** working the same day never
+touch the same file, so git has nothing to conflict on; a `*.tsv merge=union`
+rule handles even the same-person-on-two-machines case by keeping all events.
+(A shared handle would break that partitioning — see the uniqueness note below.)
 
 Set up once per machine, then sync whenever:
 
@@ -528,6 +529,14 @@ wj sync status                                  # branch, clean/dirty, ahead/beh
 
 - **Authorship** is the `actor` config (defaults to your git email's local-part,
   then `$USER`). Pin it with `actor = alice` in the config.
+- **Each person needs a *unique* handle.** Two teammates who share a `$USER` (or
+  git email) would derive the same `actor` and clobber each other's files. wj
+  guards against this: each clone records a device id (kept in `.git`, never
+  synced) against its handle, and `wj sync` **refuses to push** if your handle is
+  already registered to another machine. If that's really you on a new machine,
+  confirm with `wj sync claim`; if it's a different person, set a distinct
+  `actor = yourname`. `wj sync status` shows your handle and how many machines
+  share it.
 - After a sync, reads show **everyone's** tasks — yours as bare `T1`, teammates'
   qualified as `alice/T1`. Project/range rollups (`gantt`, `report`) sum the whole
   team; your personal views (status header, today) stay yours. You can act on your

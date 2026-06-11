@@ -977,6 +977,47 @@ func TestSearchOpenAndJump(t *testing.T) {
 	}
 }
 
+// When the day rolls over while the TUI is parked on what was "today", the view
+// must follow forward (slide the window onto the new date and refocus it) so
+// open tasks don't freeze on yesterday. A view browsing an earlier day is left
+// in place, but its notion of today is still refreshed.
+func TestAdvanceForDateRollover(t *testing.T) {
+	// parked on today (the last day of the range) → follow forward
+	m := liveModel() // today 2026-06-01; Days end 2026-06-01 (5-day span)
+	m.focusInit = true
+	m.focusedDay = len(m.g.Days) - 1 // the "today" column
+	got, cmd := m.advanceForDate("2026-06-02")
+	if got.today != "2026-06-02" {
+		t.Errorf("today should refresh to 2026-06-02, got %q", got.today)
+	}
+	if got.to != "2026-06-02" || got.from != "2026-05-29" {
+		t.Errorf("window should slide to 2026-05-29..2026-06-02, got %q..%q", got.from, got.to)
+	}
+	if got.focusInit {
+		t.Error("focusInit should reset so the reload refocuses the new today")
+	}
+	if cmd == nil {
+		t.Error("following a rollover should issue a gantt reload")
+	}
+
+	// browsing an earlier day → don't yank the view, but still refresh today
+	m2 := liveModel()
+	m2.focusInit = true
+	m2.focusedDay = 0 // an older day, deliberately
+	got2, cmd2 := m2.advanceForDate("2026-06-02")
+	if got2.today != "2026-06-02" {
+		t.Errorf("today should refresh even when not following, got %q", got2.today)
+	}
+	if got2.to != "2026-06-01" || cmd2 != nil {
+		t.Errorf("a browsing view must keep its window (to=%q, cmd=%v)", got2.to, cmd2)
+	}
+
+	// same day → no-op
+	if got3, cmd3 := liveModel().advanceForDate("2026-06-01"); cmd3 != nil || got3.to != "2026-06-01" {
+		t.Errorf("same-day advance should be a no-op, got to=%q cmd=%v", got3.to, cmd3)
+	}
+}
+
 // With a Today section present, jumping to a search hit must clear the project
 // filter (index 0 is a Today row, not "All"), so a hit in another project is
 // still found and selected rather than filtered out.

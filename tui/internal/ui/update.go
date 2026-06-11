@@ -18,6 +18,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// only every dataEveryTicks to keep open-task durations fresh cheaply.
 		m.tickN++
 		cmds := []tea.Cmd{tickCmd()}
+		// the calendar day can roll over while the TUI stays open; follow it so
+		// open tasks don't freeze on yesterday's last event.
+		var dcmd tea.Cmd
+		if m, dcmd = m.advanceForDate(time.Now().Format(dateLayout)); dcmd != nil {
+			cmds = append(cmds, dcmd)
+		}
 		if m.tickN%dataEveryTicks == 0 {
 			cmds = append(cmds, m.loadGantt(), m.loadGrid(m.currentDay()),
 				m.loadShow(m.selectedTaskID(), m.currentDay()), m.loadLive(), m.loadPending())
@@ -1225,6 +1231,30 @@ func (m Model) keyRange(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.setSpan(30)
 	}
 	return m, nil
+}
+
+// advanceForDate keeps the view honest when the TUI outlives the day it was
+// launched on (the classic "left open overnight" case). It refreshes today so
+// the header clock, Today section, and --at gating use the real date; and when
+// the view was still parked on the day that *was* today, it slides the window
+// forward so the day panel follows the new date — otherwise the focused day
+// becomes a past day and the CLI (correctly) freezes its open tasks at their
+// last event. A view deliberately browsing an earlier day is left untouched.
+func (m Model) advanceForDate(now string) (Model, tea.Cmd) {
+	if now == "" || now == m.today {
+		return m, nil
+	}
+	following := m.g != nil && m.currentDay() == m.today // on the column that was today
+	span := len(m.g.Days)
+	m.today = now
+	if !following {
+		return m, nil
+	}
+	if span < 1 {
+		span = 7
+	}
+	mm, cmd := m.setSpan(span) // re-window onto [now-(span-1), now] and refocus today
+	return mm.(Model), cmd
 }
 
 // setSpan resets the date window to the last n days ending today, and refocuses

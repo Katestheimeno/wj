@@ -1056,6 +1056,69 @@ cmd_complete() {
 # concurrent authors never conflict, so "sync" is just pull --rebase + push.
 # ---------------------------------------------------------------------------
 
+# --- identity guard: tell apart two *people* who derive the same actor --------
+# In a shared log, identity is just the actor handle (git email / $USER). Two
+# different people with the same handle would write to the same author files and
+# silently clobber each other. To catch that, each *clone* mints a stable device
+# id kept in .git (so it never syncs and is unique per clone) and registers it
+# against its actor in a synced, append-only registry. On sync we refuse to push
+# when our actor is already registered to other device(s) but not this one —
+# either the same person on a new machine (`wj sync claim`) or a real collision
+# (set a distinct `actor`). We only ever append, never rewrite; a dedicated
+# `merge=union` rule (see sync_write_gitattributes) keeps every clone's line on a
+# concurrent merge. NB: the name is deliberately *not* `*.tsv`, so the data-file
+# scans (find -name '*.tsv', day/pending globs) never mistake it for event data.
+WJ_REGISTRY=".wj-registry"              # path relative to $WJ_DATA_DIR
+
+_gen_device_id() {
+    local id=""
+    [[ -r /dev/urandom ]] && id=$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 12)
+    [[ -n $id ]] || id=$(printf '%s-%s-%s' "$$" "${RANDOM}" "$(date +%s 2>/dev/null)" | cksum | tr -cd '0-9' | head -c 12)
+    printf '%s' "$id"
+}
+
+# a stable id for this clone, stored in .git (local, never pushed). Created once.
+_DEVICE=""
+cur_device() {
+    [[ -n $_DEVICE ]] && { printf '%s' "$_DEVICE"; return; }
+    local f="$WJ_DATA_DIR/.git/wj-device" id=""
+    [[ -f $f ]] && IFS= read -r id <"$f" 2>/dev/null
+    if [[ -z $id ]]; then
+        id=$(_gen_device_id)
+        [[ -d "$WJ_DATA_DIR/.git" ]] && printf '%s\n' "$id" >"$f" 2>/dev/null || true
+    fi
+    _DEVICE=$id
+    printf '%s' "$id"
+}
+
+# the device ids already registered to actor $1, one per line.
+registry_devices() {
+    local f="$WJ_DATA_DIR/$WJ_REGISTRY"
+    [[ -f $f ]] || return 0
+    awk -F'\t' -v a="$1" '$1==a{print $2}' "$f"
+}
+
+# 0 = safe to use this actor (unregistered, or this clone already owns it);
+# 1 = the actor is registered to other clone(s) but not this one (ambiguous).
+# Reads the registry *after* a pull, so it reflects every other clone's claim.
+registry_check() {
+    local a d k seen=0; a=$(cur_actor); d=$(cur_device)
+    while IFS= read -r k; do
+        [[ -z $k ]] && continue
+        seen=1; [[ $k == "$d" ]] && return 0
+    done < <(registry_devices "$a")
+    (( seen )) && return 1   # known to someone else, not us -> ambiguous
+    return 0                 # nobody has claimed this actor yet -> fine
+}
+
+# append this clone's (actor, device, host, first-seen) to the registry once.
+registry_add() {
+    local a d f; a=$(cur_actor); d=$(cur_device); f="$WJ_DATA_DIR/$WJ_REGISTRY"
+    registry_devices "$a" | grep -qxF "$d" && return 0
+    printf '%s\t%s\t%s\t%s\n' "$a" "$d" "$(uname -n 2>/dev/null || echo '?')" \
+        "$(date +%Y-%m-%dT%H:%M 2>/dev/null || echo '?')" >>"$f"
+}
+
 # a foreground/interactive invocation (a real terminal) may prompt for an ssh
 # passphrase; a non-interactive one (e.g. the TUI's sync) must never hang.
 sync_interactive() { [[ -t 1 ]]; }
@@ -1080,6 +1143,18 @@ sync_write_gitattributes() {
     local ga="$WJ_DATA_DIR/.gitattributes"
     grep -qsF '*.tsv merge=union' "$ga" || printf '*.tsv merge=union\n' >>"$ga"
     grep -qsF 'pending.*.tsv -merge' "$ga" || printf 'pending.*.tsv -merge\npending.tsv -merge\n' >>"$ga"
+    # the identity registry is append-only across clones: union-merge it too so a
+    # concurrent first-registration from two machines never conflicts the sync.
+    grep -qsF '.wj-registry merge=union' "$ga" || printf '.wj-registry merge=union\n' >>"$ga"
+}
+
+# the lock file is a per-machine artifact (acquire_lock holds an fd on it), so it
+# must never be committed or synced. Ignore it, and untrack it if an older clone
+# already committed it (the removal then propagates to every other clone).
+sync_write_gitignore() {
+    local gi="$WJ_DATA_DIR/.gitignore"
+    grep -qsxF '/.lock' "$gi" || printf '/.lock\n' >>"$gi"
+    _git rm --cached -q --ignore-unmatch -- .lock >/dev/null 2>&1 || true
 }
 
 # stamp ownership on any legacy DD.tsv by renaming it to DD.<actor>.tsv, so a
@@ -1103,14 +1178,17 @@ sync_migrate_legacy() {
 
 cmd_sync() {
     command -v git >/dev/null 2>&1 || die "sync needs git"
+    local claim=0
     case ${ARGS[0]:-} in
         init)   sync_init "${ARGS[1]:-}"; return ;;
         status) sync_status; return ;;
+        claim)  claim=1 ;;   # assert "this machine is also me" — adopt the actor
         "")     ;;
-        *)      die "sync: unknown subcommand '${ARGS[0]}' (use: sync | sync init <remote> | sync status)" ;;
+        *)      die "sync: unknown subcommand '${ARGS[0]}' (use: sync | sync init <remote> | sync claim | sync status)" ;;
     esac
     [[ -d $WJ_DATA_DIR/.git ]] || die "not a sync repo yet — run: wj sync init <remote-url>"
     sync_write_gitattributes
+    sync_write_gitignore
     sync_migrate_legacy
     pending_migrate     # stamp a legacy pending.tsv with your author too
     _git add -A
@@ -1121,11 +1199,25 @@ cmd_sync() {
             _git rebase --abort >/dev/null 2>&1 || true
             die "sync: pull failed — $(printf '%s' "$out" | tail -n1)"
         fi
+        # identity guard: now that the pull has the other clones' claims, refuse
+        # if this actor belongs to a different machine (unless we're claiming it).
+        if (( claim )) || registry_check; then
+            registry_add
+            _git add -- "$WJ_REGISTRY"
+            _git diff --cached --quiet 2>/dev/null || _git commit -q -m "wj: register $(cur_actor) ($(cur_device))"
+        else
+            die "sync: author \"$(cur_actor)\" is already registered to another machine in this journal.
+  • same person on a new machine?  run:  wj sync claim
+  • a different person?  pick a unique handle — set \`actor = yourname\` in $WJ_CONFIG, then re-sync."
+        fi
         if ! out=$(_git push 2>&1); then
             die "sync: push failed — $(printf '%s' "$out" | tail -n1)"
         fi
         printf 'synced %s (%s)\n' "$WJ_DATA_DIR" "$(cur_actor)"
     else
+        registry_add   # no peers to collide with yet; record us for the first push
+        _git add -- "$WJ_REGISTRY" 2>/dev/null || true
+        _git diff --cached --quiet 2>/dev/null || _git commit -q -m "wj: register $(cur_actor) ($(cur_device))"
         printf 'committed locally (no remote — add one with: wj sync init <url>)\n'
     fi
 }
@@ -1133,13 +1225,38 @@ cmd_sync() {
 # After a first-init merge against a populated remote, auto-resolve the only
 # conflict wj owns: .gitattributes (keep ours — it carries the union rule).
 # Append-only *.tsv are union-merged and never conflict; any other clashing file
-# is foreign data we won't guess on, so we bail (non-zero) and let the caller abort.
+# is foreign data left for the caller to settle (interactively or by aborting).
 sync_resolve_init_conflicts() {
-    local f
+    _git diff --name-only --diff-filter=U 2>/dev/null | grep -qxF .gitattributes &&
+        { _git checkout --ours -- .gitattributes 2>/dev/null && _git add -- .gitattributes; }
+    return 0
+}
+
+# keep one side of every remaining add/add conflict after a first-init merge:
+#   $1 = remote (the fetched copy) | local (your working copy).
+# The discarded side stays in the pre-merge commit, recoverable from git history.
+sync_init_keep() {
+    local side f
+    case $1 in remote) side=--theirs ;; local) side=--ours ;; *) return 1 ;; esac
     while IFS= read -r f; do
-        [[ $f == .gitattributes ]] || return 1
+        _git checkout "$side" -- "$f" 2>/dev/null && _git add -- "$f" || return 1
     done < <(_git diff --name-only --diff-filter=U 2>/dev/null)
-    _git checkout --ours -- .gitattributes 2>/dev/null && _git add -- .gitattributes
+}
+
+# interactively settle the remaining foreign add/add conflicts on first init: the
+# listed files exist on both sides with different contents. Offer to keep the
+# remote's copy or your local one — nothing is lost either way, the discarded side
+# stays in git history. Returns 0 once resolved, non-zero to abort.
+sync_choose_init_conflict() {
+    local clash=$1 ans
+    printf 'wj: the remote already has these files, which differ from your local copy:\n  %s\n' "$clash" >&2
+    printf 'Keep the [r]emote copy, your [l]ocal copy, or [a]bort? [r/l/a] ' >&2
+    read -r ans </dev/tty 2>/dev/null || return 1
+    case ${ans:0:1} in
+        r|R) sync_init_keep remote && printf 'wj: kept the remote copy (your version is preserved in git history)\n' >&2 ;;
+        l|L) sync_init_keep local  && printf 'wj: kept your local copy (the remote version is preserved in git history)\n' >&2 ;;
+        *)   return 1 ;;
+    esac
 }
 
 # wj sync init [remote]: make the data dir a git repo, install the union merge
@@ -1151,6 +1268,7 @@ sync_init() {
     [[ -d $WJ_DATA_DIR/.git ]] || _git init -q
     br=$(_git symbolic-ref --short HEAD 2>/dev/null || echo main)
     sync_write_gitattributes
+    sync_write_gitignore
     sync_migrate_legacy
     pending_migrate
     _git add -A
@@ -1176,14 +1294,34 @@ sync_init() {
             # merge (not rebase): with no common ancestor the union driver — already
             # committed above — keeps *both* sides of every *.tsv instead of conflicting.
             if ! _git merge --allow-unrelated-histories --no-edit -q "origin/$rbr" >/dev/null 2>&1; then
-                if sync_resolve_init_conflicts; then
-                    _git commit --no-edit -q || die "sync init: could not finish merging remote history"
-                else
-                    local clash; clash=$(_git diff --name-only --diff-filter=U 2>/dev/null | paste -sd' ' -)
+                sync_resolve_init_conflicts          # auto-fix .gitattributes (keep ours)
+                local clash; clash=$(_git diff --name-only --diff-filter=U 2>/dev/null | paste -sd' ' -)
+                # foreign files clashing on both sides: let a terminal user pick a
+                # side; a non-interactive run keeps the safe abort (nothing guessed).
+                if [[ -n $clash ]] && ! { sync_interactive && sync_choose_init_conflict "$clash"; }; then
                     _git merge --abort >/dev/null 2>&1 || true
-                    die "sync init: the remote already has files that clash with your local data ($clash). Resolve by hand, then re-run: cd $WJ_DATA_DIR && git merge --allow-unrelated-histories origin/$rbr"
+                    die "sync init: the remote already has files that clash with your local data ($clash). Re-run in a terminal to pick a side, or resolve by hand: cd $WJ_DATA_DIR && git merge --allow-unrelated-histories origin/$rbr"
                 fi
+                _git commit --no-edit -q || die "sync init: could not finish merging remote history"
             fi
+        fi
+        sync_write_gitignore   # a legacy clone may have committed .lock; the merge
+                               # just pulled it in — untrack it before we push back.
+        # track origin even if the guard below aborts the push, so a follow-up
+        # `wj sync claim` can pull/push without re-running init. (No-op when the
+        # remote is empty — origin/$br doesn't exist yet; the push -u sets it.)
+        _git branch --set-upstream-to="origin/$br" "$br" >/dev/null 2>&1 || true
+        # identity guard: the fetch/merge above pulled in any existing claims, so
+        # refuse to push (entangling our data) if this actor is another machine's.
+        if registry_check; then
+            registry_add
+            _git add -- "$WJ_REGISTRY"
+            _git diff --cached --quiet 2>/dev/null || _git commit -q -m "wj: register $(cur_actor) ($(cur_device))"
+        else
+            die "sync init: author \"$(cur_actor)\" is already registered to another machine in this journal.
+  Your data is committed locally but not shared yet.
+  • same person on a new machine?  run:  wj sync claim
+  • a different person?  set \`actor = yourname\` in $WJ_CONFIG, then: wj sync"
         fi
         _git push -u origin "$br" || die "sync init: push failed (check the remote URL and your auth)"
         printf 'sync ready in %s (remote: %s)\n' "$WJ_DATA_DIR" "$remote"
@@ -1204,6 +1342,11 @@ sync_status() {
         printf 'sync: branch %s, %s, ahead %s / behind %s\n' "$br" "$dirty" "$ahead" "$behind"
     else
         printf 'sync: branch %s, %s, no upstream\n' "$br" "$dirty"
+    fi
+    local a n; a=$(cur_actor); n=$(registry_devices "$a" | grep -c .)
+    printf 'author %s (device %s), %s machine(s) registered\n' "$a" "$(cur_device)" "$n"
+    if ! registry_check; then
+        printf 'wj: this machine is NOT registered for author "%s" — run `wj sync claim` if it is you, or set a unique actor.\n' "$a" >&2
     fi
 }
 
@@ -2158,12 +2301,19 @@ SYNC (SHARED / COLLABORATIVE JOURNAL)
   sync                Commit local changes, pull (rebase), push. Run it (or let
                       it run) whenever you want to share/receive work. Reads then
                       show everyone's tasks (yours bare T#, teammates' actor/T#).
-  sync status         Branch, clean/uncommitted, and ahead/behind counts.
+  sync claim          Adopt this author handle on this machine: use only when the
+                      same person syncs from a new clone and `wj sync` refuses
+                      because the handle is already registered elsewhere.
+  sync status         Branch, clean/uncommitted, ahead/behind, and your author /
+                      device (plus how many machines share the handle).
   team                Who's working on what right now across the shared log — each
                       author's running task (or idle) + their tracked total today
                       (or --date). Also `report --by person` for range rollups.
   Authorship is the `actor` config (default: your git email / $USER). Each author
-  writes their own per-day file, so concurrent work never conflicts.
+  writes their own per-day file, so concurrent work never conflicts. The handle
+  must be unique per person: `wj sync` refuses to push if two different machines
+  derive the same `actor` (so two people with the same $USER don't clobber each
+  other) — same-person new machines confirm with `wj sync claim`.
 
 VIEW & ANALYSIS
   ls                  List currently-open tasks (in-progress / paused / deferred).
