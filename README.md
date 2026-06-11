@@ -311,7 +311,7 @@ need: `cp wj.cfg.example "$(wj config)"`. The keys are also summarized below.
 | `interface` | `minimal` | Front-end for bare `wj`: `minimal` (status table) or `ui` (launch `wj-tui`). |
 | `auto_pause` | `off` | On `start`/`resume`, auto-pause another running task in the same project. `off` runs them in parallel; override per command with `--parallel` / `--auto-pause`. |
 | `accent` | `141` | `wj-tui`'s border/header color — the focused panel's border. A 256-color code (`141`), a hex value (`#9d7cd8`), or an ANSI name (`purple`). |
-| `layout` | `balanced` | `wj-tui`'s layout **topology** — each a genuinely different arrangement of the same panels: `balanced` (classic sidebar + main column), `spotlight` (a thin navigator rail + one large focused panel; alias `rail`), `golden` (a full-width Range banner over a `lists \| Day \| Timeline` row; alias `dashboard`), `triptych` (three columns `lists \| Range+Day \| Timeline`, for wide terminals), `quadrant` (a 2×2 grid of paired panels), or `custom` (see below). Shift+L cycles them live; on a terminal too small for the chosen topology it auto-falls back to `balanced` so nothing gets crushed. |
+| `layout` | `balanced` | `wj-tui`'s layout **topology** — each a genuinely different arrangement of the same panels: `balanced` (classic sidebar + main column), `spotlight` (a thin navigator rail + a large focused panel with a companion below; alias `rail`), `golden` (a full-width Range banner over a `lists \| Day \| Timeline` row; alias `dashboard`), `triptych` (three columns `lists \| Range+Day \| Timeline`, for wide terminals), `quadrant` (a 2×2 grid of paired panels), or `custom` (see below). Shift+L cycles them live; on a terminal too small for the chosen topology it auto-falls back to `balanced` so nothing gets crushed. |
 | `sidebar` | `left` | Which side the `wj-tui` lists column sits on: `left` or `right`. |
 | `confirm` | `destructive` | `wj-tui`'s y/n guard before an action: `all` (every action confirms), `destructive` (only `cancel`/void and pending `drop`), or `off` (none — `u` undo is the safety net). |
 | `icons` | `off` | `wj-tui`'s status markers and indicators (the `>`/`=`/`»`/`x` task glyphs, the running-task marker, pause-mode badge, now-marker, scroll/`more` arrows, etc.). `off` keeps everything in a universal ASCII set that renders in any font; `on` uses Nerd-Font icons (needs a [patched font](https://www.nerdfonts.com)). A terminal app can't detect a font's glyphs, so this is an explicit opt-in rather than auto-detection. |
@@ -346,8 +346,10 @@ Project detection order: git remote basename → repo folder name → `default_p
 the CLI's `--json` output and triggers actions by calling `wj` — so the bash CLI
 stays the single source of truth, and the UI can never disagree with it.
 
-The layout fills the whole terminal: a narrow **sidebar** of lists drives a wide
-**main** column of detail. The header shows the running task with a live clock
+The layout fills the whole terminal. By default (the `balanced` topology) a
+narrow **sidebar** of lists drives a wide **main** column of detail; other
+topologies rearrange the same panels entirely (see **Layout** below, or press
+**Shift+L** to cycle them). The header shows the running task with a live clock
 plus a today rollup (`>1 =0 x4 · Σ2h39m`); `?` opens a full keybinding overlay.
 Navigation is vim-style — `j`/`k` move within the focused panel, `h`/`l` (like
 `Shift-Tab`/`Tab`) cycle every panel with wraparound, `1`-`4` jump straight to
@@ -436,8 +438,8 @@ The panel **layout** is configurable too — and these are real *topologies*, no
 just re-proportioned versions of one grid, so each feels distinct while still
 surfacing every panel. `balanced` (the default) is the classic sidebar of lists
 beside a column of visualizations. `spotlight` (alias `rail`) is a thin navigator
-rail — Projects/Tasks/Pending/Timeline — beside one large area showing the focused
-pane in full. `golden` (alias `dashboard`) leads with a full-width Range banner
+rail — Projects/Tasks/Timeline/Pending — beside a large area that leads with the
+focused pane and fills the space below it with a related companion panel. `golden` (alias `dashboard`) leads with a full-width Range banner
 over a `lists | Day | Timeline` row. `triptych` is three side-by-side columns
 (`lists | Range+Day | Timeline`) for wide terminals. `quadrant` is a 2×2 grid of
 paired panels. Set the startup default with `layout=` in the config, or press

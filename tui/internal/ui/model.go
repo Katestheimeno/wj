@@ -1,10 +1,12 @@
-// Package ui implements the wj-tui front-end. The layout is lazygit-style: a
-// narrow left sidebar of lists (Projects, then the focused day's Tasks) drives
-// a wide main column of visualizations (the range Gantt, the focused day's
-// intraday Gantt, and the selected task's Timeline). Selecting a project in the
-// sidebar filters the day detail (master→detail). Navigation is vim-style:
-// j/k move within a panel, h/l (and Tab/Shift+Tab) cycle the panels with
-// wraparound, 1-4 jump straight to a panel, ←/→ step days.
+// Package ui implements the wj-tui front-end. The same six panels — a sidebar of
+// lists (Projects, the focused day's Tasks, the Pending backlog) and a column of
+// visualizations (the range Gantt, the focused day's intraday Gantt, and the
+// selected task's Timeline) — are arranged by one of several switchable layout
+// topologies (see layoutProfile/topoKind in view.go). The default, balanced, is
+// lazygit-style: the sidebar drives the visualizations, and selecting a project
+// filters the day detail (master→detail). Navigation is vim-style: j/k move
+// within a panel, h/l (and Tab/Shift+Tab) cycle the panels with wraparound, 1-4
+// jump straight to a panel, ←/→ step days, Shift+L cycles the layout, z zooms.
 package ui
 
 import (

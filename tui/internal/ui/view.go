@@ -373,6 +373,69 @@ func stackSpecs(w int, fill bool, hs []int, specs ...panelSpec) string {
 // reachable: Tab/1-4 move focus (swapping the big area and the highlighted rail
 // entry), and z still zooms. The rail reuses the ordinary list renderers, just
 // in quarter-height slots, so selection-windowing keeps working.
+// railHeights sizes the rail panels to their content rather than equal quarters
+// — a short panel (e.g. the Timeline digest) no longer reserves a big empty
+// block. Each panel gets at least minRail rows; when the natural heights overflow
+// the body they shrink proportionally to fit, and when they leave slack it is
+// spread proportionally to content. The result always sums to exactly bodyH.
+func railHeights(railW, bodyH int, specs []panelSpec) []int {
+	const minRail = 4 // border(2) + title(1) + one content row
+	iw := railW - 4
+	if iw < 8 {
+		iw = 8
+	}
+	nats := make([]int, len(specs))
+	sum := 0
+	for i, s := range specs {
+		n := 2 + lineCount(s.body(iw, 1<<30)) // border(2) + title + content lines
+		if n < minRail {
+			n = minRail
+		}
+		nats[i] = n
+		sum += n
+	}
+	if sum >= bodyH { // content overflows the rail — shrink proportionally to fit
+		return splitW(bodyH, nats...)
+	}
+	// slack remains: spread it proportionally to each panel's content, so the
+	// rail fills the column but the room lands on the content-heavy lists rather
+	// than inflating a short digest into dead space.
+	extra := splitW(bodyH-sum, nats...)
+	for i := range nats {
+		nats[i] += extra[i]
+	}
+	return nats
+}
+
+// railTimelineDigest is a compact, non-wrapping summary of the selected task for
+// the rail's Timeline slot — the full word-wrapped detail is unreadable at rail
+// width (it degrades to one char per line), so the rail shows a few truncated
+// lines and the big area carries the full timeline when Timeline has focus.
+func (m Model) railTimelineDigest(iw int) string {
+	if m.show == nil {
+		return dimStyle.Render("(no task selected)")
+	}
+	s := m.show
+	head := s.ID
+	if s.Project != "" {
+		head += " [" + s.Project + "]"
+	}
+	lines := []string{truncate(head, iw)}
+	if s.Desc != "" {
+		lines = append(lines, truncate(s.Desc, iw))
+	}
+	meta := s.Status
+	if s.Minutes > 0 {
+		meta += " · " + fmtDur(s.Minutes)
+	}
+	lines = append(lines, dimStyle.Render(truncate(meta, iw)))
+	if n := len(s.Events); n > 0 {
+		e := s.Events[n-1]
+		lines = append(lines, dimStyle.Render(truncate("last: "+e.Time+" "+e.Event, iw)))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) renderRail(w, bodyH int, fill bool) string {
 	railW := clamp(w*m.activeLayout().sidePct/100, 18, 30)
 	if railW > w-32 {
@@ -383,36 +446,68 @@ func (m Model) renderRail(w, bodyH int, fill bool) string {
 	}
 	mainW := w - railW
 
-	railSpecs := []panelSpec{m.specProjects(), m.specTasks(), m.specPending(), m.specTimeline()}
+	// rail order follows the Tab / 1-4 navigation order (Projects, Tasks,
+	// Timeline, Pending) so moving focus steps down the rail predictably. The
+	// Timeline slot uses a compact digest (the full detail wraps badly at rail
+	// width); its full form shows in the big area when Timeline has focus.
+	tl := m.specTimeline()
+	tl.body = func(iw, _ int) string { return m.railTimelineDigest(iw) }
+	railSpecs := []panelSpec{m.specProjects(), m.specTasks(), tl, m.specPending()}
 	var railHs []int
 	if fill {
-		railHs = splitN(bodyH, len(railSpecs))
+		railHs = railHeights(railW, bodyH, railSpecs)
 	}
 	rail := stackSpecs(railW, fill, railHs, railSpecs...)
 
-	// the big area: the focused pane's primary visualization, full height. The
-	// sidebar↔main pairing holds (Projects↔Range, Tasks↔Day), so highlighting a
-	// rail entry and enlarging its companion visualization stay in sync.
-	var big panelSpec
-	switch m.pane {
-	case paneRange:
-		big = m.specRange()
-	case paneDay:
-		big = m.specDay()
-	case panePending:
-		big = m.specPendingDetail()
-	default:
-		big = m.specTimeline()
-	}
-	bigH := 0
-	if fill {
-		bigH = bodyH
-	}
-	main := big.render(mainW, bigH)
+	// the big area: the focused pane's primary visualization on top, with a
+	// related companion below filling the space a short primary would leave
+	// empty. The sidebar↔main pairing holds (Projects↔Range, Tasks↔Day), so
+	// highlighting a rail entry and enlarging its companion stay in sync.
+	primary, companion := m.railBigPanels()
+	main := stackBig(mainW, bodyH, fill, m.activeLayout(), primary, companion)
 	if sidebarRight {
 		return lipgloss.JoinHorizontal(lipgloss.Top, main, rail)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, rail, main)
+}
+
+// railBigPanels picks the spotlight big area's primary panel (the focused pane's
+// visualization) and a companion that makes the otherwise-empty lower space
+// useful: Range→Day (the day breaks the range down), Day→Timeline (the selected
+// task's events), Timeline→Day (its surrounding day), Pending→Day.
+func (m Model) railBigPanels() (panelSpec, panelSpec) {
+	switch m.pane {
+	case paneRange:
+		return m.specRange(), m.specDay()
+	case paneDay:
+		return m.specDay(), m.specTimeline()
+	case panePending:
+		return m.specPendingDetail(), m.specDay()
+	default: // paneTimeline
+		return m.specTimeline(), m.specDay()
+	}
+}
+
+// stackBig renders the spotlight big area: the primary panel over the companion,
+// split by the profile's focus ratio (e.g. spotlight's 7/10 → ~70% primary).
+// When not filling, both size to their content.
+func stackBig(w, h int, fill bool, lp layoutProfile, primary, companion panelSpec) string {
+	if !fill {
+		return lipgloss.JoinVertical(lipgloss.Left, primary.render(w, 0), companion.render(w, 0))
+	}
+	const minPart = 6  // border(2) + title(1) + content; below this a panel is useless
+	if h < 2*minPart { // too short to split — primary takes the whole area
+		return primary.render(w, h)
+	}
+	hs := splitW(h, lp.focusNum, lp.focusDen-lp.focusNum)
+	// keep both halves usable; the split always sums to h so nothing renders
+	// unbounded (a zero/negative height would size to content and overflow).
+	if hs[1] < minPart {
+		hs[0], hs[1] = h-minPart, minPart
+	} else if hs[0] < minPart {
+		hs[0], hs[1] = minPart, h-minPart
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, primary.render(w, hs[0]), companion.render(w, hs[1]))
 }
 
 // renderDashboard (the "golden"/"dashboard" topology) leads with the Range
@@ -423,11 +518,15 @@ func (m Model) renderDashboard(w, bodyH int, fill bool) string {
 	if fill {
 		hs := splitW(bodyH, m.activeLayout().focusNum, m.activeLayout().focusDen-m.activeLayout().focusNum)
 		bannerH, rowH = hs[0], hs[1]
-		if bannerH < 6 {
-			bannerH = 6
-		}
-		if rowH < 6 {
-			rowH = bodyH - bannerH
+		// keep both bands usable while preserving bannerH+rowH == bodyH (a stale
+		// rowH would leave a gap or overflow the body).
+		const minBand = 6
+		if bodyH >= 2*minBand {
+			if bannerH < minBand {
+				bannerH, rowH = minBand, bodyH-minBand
+			} else if rowH < minBand {
+				bannerH, rowH = bodyH-minBand, minBand
+			}
 		}
 	}
 	banner := m.specRange().render(w, bannerH)
@@ -445,6 +544,9 @@ func (m Model) renderDashboard(w, bodyH int, fill bool) string {
 	day := m.specDay().render(dayW, rowH)
 	tl := m.specTimeline().render(tlW, rowH)
 	row := lipgloss.JoinHorizontal(lipgloss.Top, lists, day, tl)
+	if sidebarRight { // lists hug the right edge
+		row = lipgloss.JoinHorizontal(lipgloss.Top, day, tl, lists)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, banner, row)
 }
 
@@ -502,6 +604,10 @@ func (m Model) renderQuadrant(w, bodyH int, fill bool) string {
 
 	top := lipgloss.JoinHorizontal(lipgloss.Top, tl, tr)
 	bot := lipgloss.JoinHorizontal(lipgloss.Top, bl, br)
+	if sidebarRight { // the lists column (Projects/Tasks, Pending) hugs the right
+		top = lipgloss.JoinHorizontal(lipgloss.Top, tr, tl)
+		bot = lipgloss.JoinHorizontal(lipgloss.Top, br, bl)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, top, bot)
 }
 
@@ -835,9 +941,10 @@ func layoutIndex(name string) int {
 	return -1
 }
 
-// SetLayout selects the startup layout by name (balanced | spotlight | golden |
-// custom). An unknown or empty name keeps the default (balanced). Call once at
-// startup — after SetLayoutRatios, so a configured "custom" profile exists.
+// SetLayout selects the startup layout by name: balanced | spotlight (alias
+// rail) | golden (alias dashboard) | triptych | quadrant | custom. An unknown or
+// empty name keeps the default (balanced). Call once at startup — after
+// SetLayoutRatios, so a configured "custom" profile exists.
 func SetLayout(name string) {
 	if i := layoutIndex(strings.TrimSpace(name)); i >= 0 {
 		defaultLayout = i
@@ -907,10 +1014,11 @@ func SetLayoutRatios(sidebar, split string) {
 	}
 }
 
-// split divides a column height among its three stacked panels; the focused one
-// (index 0/1/2) gets the profile's major share and the other two split the rest
-// by restHi:restLo (top-most of the two gets restHi). The three always sum to h.
-// A too-short column or an out-of-range focus falls back to equal thirds.
+// split divides a column height among its three stacked panels for the
+// two-column topology (balanced/custom); the focused one (index 0/1/2) gets the
+// profile's major share and the other two split the rest by restHi:restLo
+// (top-most of the two gets restHi). The three always sum to h. A too-short
+// column or an out-of-range focus falls back to equal thirds.
 func (lp layoutProfile) split(h, focused int) [3]int {
 	if h < 12 || focused < 0 || focused > 2 {
 		a := h / 3
@@ -931,9 +1039,9 @@ func (lp layoutProfile) split(h, focused int) [3]int {
 		out[i] = sizes[j]
 		j++
 	}
-	// keep the non-focused panels readable: never shrink one below minPanel rows
-	// (mostly rescues spotlight's thin strips), borrowing from the focused panel
-	// as long as it can spare the rows. h<12 already short-circuited above.
+	// keep the non-focused panels readable: never shrink one below minPanel rows,
+	// borrowing from the focused panel as long as it can spare the rows (this
+	// mostly rescues a custom profile's thin strips). h<12 already short-circuited.
 	const minPanel = 4
 	for i := 0; i < 3; i++ {
 		if i == focused || out[i] >= minPanel {

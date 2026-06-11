@@ -1366,6 +1366,66 @@ func TestEveryLayoutRenders(t *testing.T) {
 	}
 }
 
+// No layout may overflow the terminal — in width (a line wider than W) or height
+// (more rows than H) — across a sweep of sizes and both sidebar sides, including
+// tiny terminals that trip the fallback and the stackBig/dashboard min-band
+// clamps. This guards the integer split arithmetic in every topology.
+func TestEveryLayoutNoOverflow(t *testing.T) {
+	defer func() { sidebarRight = false }()
+	sizes := []struct{ W, H int }{
+		{40, 12}, {52, 16}, {64, 18}, {80, 22}, {104, 22}, {120, 30}, {160, 50}, {200, 60},
+	}
+	for _, right := range []bool{false, true} {
+		sidebarRight = right
+		for i, lp := range layouts {
+			for _, s := range sizes {
+				m := drilled()
+				u, _ := m.Update(tea.WindowSizeMsg{Width: s.W, Height: s.H})
+				mm := u.(Model)
+				mm.layout = i
+				// exercise every focus state — the rail's big area and companion
+				// split depend on m.pane.
+				for p := pane(0); p < paneCount; p++ {
+					mm.pane = p
+					out := mm.View()
+					lines := strings.Split(out, "\n")
+					if len(lines) > s.H {
+						t.Errorf("%s right=%v %dx%d pane=%d: %d rows > %d", lp.name, right, s.W, s.H, p, len(lines), s.H)
+					}
+					for _, ln := range lines {
+						if w := lipgloss.Width(ln); w > s.W {
+							t.Errorf("%s right=%v %dx%d pane=%d: line overflows to %d", lp.name, right, s.W, s.H, p, w)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// sidebar=right must fill the width exactly in every topology (the lists column
+// moves but nothing under/over-fills).
+func TestEveryLayoutFillsWidthSidebarRight(t *testing.T) {
+	defer func() { sidebarRight = false }()
+	sidebarRight = true
+	const W, H = 140, 48
+	for i, lp := range layouts {
+		m := drilled()
+		u, _ := m.Update(tea.WindowSizeMsg{Width: W, Height: H})
+		mm := u.(Model)
+		mm.layout = i
+		maxw := 0
+		for _, ln := range strings.Split(mm.View(), "\n") {
+			if w := lipgloss.Width(ln); w > maxw {
+				maxw = w
+			}
+		}
+		if maxw != W {
+			t.Errorf("%s (sidebar=right): fills %d cols, want exactly %d", lp.name, maxw, W)
+		}
+	}
+}
+
 // Below its minSize a topology falls back to balanced so no panel gets crushed;
 // balanced itself is always honored.
 func TestLayoutFallsBackWhenTiny(t *testing.T) {

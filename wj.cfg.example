@@ -75,7 +75,8 @@ accent = 141
 
 # Layout topology — each is a genuinely different arrangement of the same panels:
 #   balanced  — classic sidebar of lists beside a column of visualizations (default)
-#   spotlight — a thin navigator rail + one large focused panel  (alias: rail)
+#   spotlight — a thin navigator rail (Projects/Tasks/Timeline/Pending) beside a
+#               large focused panel with a related companion below it  (alias: rail)
 #   golden    — a full-width Range banner over a lists | Day | Timeline row  (alias: dashboard)
 #   triptych  — three columns: lists | Range+Day | Timeline  (wide terminals)
 #   quadrant  — a 2×2 grid of paired panels
