@@ -74,7 +74,7 @@ func TestClientRoundTrip(t *testing.T) {
 	}
 
 	// gantt round-trips
-	ga, err := cli.Gantt("2026-05-28", "2026-05-28", "project", false)
+	ga, err := cli.Gantt("2026-05-28", "2026-05-28", "project", "")
 	if err != nil {
 		t.Fatalf("Gantt: %v", err)
 	}

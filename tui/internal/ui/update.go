@@ -213,6 +213,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pick.active {
 		return m.handlePick(msg)
 	}
+	if m.actorPick.active {
+		return m.handleActorPick(msg)
+	}
 	if m.input.active {
 		return m.handleInput(msg)
 	}
@@ -325,18 +328,32 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showTeam = true
 		return m, m.loadTeam()
 	case "M":
-		// toggle the Tasks AND Pending panels between everyone's and just mine.
-		m.mineOnly = !m.mineOnly
-		m.selTask = clamp(m.selTask, 0, len(m.filteredTasks())-1) // lists may shrink
-		m.selPend = clamp(m.selPend, 0, len(m.visiblePending())-1)
-		if m.mineOnly {
-			m.notice = "showing mine only (tasks + backlog + range)"
-		} else {
-			m.notice = "showing everyone (tasks + backlog + range)"
+		// toggle the whole view (Tasks + Pending + Range) between everyone and just
+		// you — a shortcut for the F picker's "mine" row.
+		if m.actor == "" {
+			m.notice = "not a shared journal — nothing to filter by author"
+			return m, nil
 		}
-		// the Range gantt is filtered server-side, so re-fetch it; Tasks/Pending
-		// filter client-side and update instantly.
-		return m, tea.Batch(m.loadGantt(), m.loadShow(m.selectedTaskID(), m.currentDay()))
+		if m.filterActor == m.actor {
+			m.filterActor = ""
+		} else {
+			m.filterActor = m.actor
+		}
+		return m.applyActorFilter()
+	case "F":
+		// open the author-filter picker (everyone / you / each teammate). Scopes
+		// the whole view, like M but to any author.
+		if m.actor == "" {
+			m.notice = "not a shared journal — nothing to filter by author"
+			return m, nil
+		}
+		opts := m.actorPickOptions()
+		sel := indexOf(opts, m.filterActor) // start on the current filter
+		if sel < 0 {
+			sel = 0
+		}
+		m.actorPick = actorPickMode{active: true, sel: sel}
+		return m, nil
 	case "L":
 		// cycle the panel layout (balanced → spotlight → golden → …); live only,
 		// the startup default comes from the config's layout= / -layout.
@@ -1132,6 +1149,72 @@ func (m Model) pickJump(idx int) (tea.Model, tea.Cmd) {
 	m.selTask = idx
 	m.pane = paneDay
 	return m, m.loadShow(m.selectedTaskID(), m.currentDay())
+}
+
+// handleActorPick resolves the author-filter picker: a label key (1-9 then a-z)
+// jumps straight to a row, ↑↓/jk move the highlight, enter confirms, esc/F
+// cancels. The chosen author scopes the whole view (Tasks + Pending + Range).
+func (m Model) handleActorPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.actorPickOptions())
+	switch msg.String() {
+	case "esc", "q", "F", "ctrl+c":
+		m.actorPick = actorPickMode{}
+		return m, nil
+	case "up", "k", "ctrl+p":
+		if m.actorPick.sel > 0 {
+			m.actorPick.sel--
+		}
+		return m, nil
+	case "down", "j", "ctrl+n":
+		if m.actorPick.sel < n-1 {
+			m.actorPick.sel++
+		}
+		return m, nil
+	case "g":
+		m.actorPick.sel = 0
+		return m, nil
+	case "G":
+		if n > 0 {
+			m.actorPick.sel = n - 1
+		}
+		return m, nil
+	case "enter":
+		return m.actorPickChoose(m.actorPick.sel)
+	}
+	// a label key jumps straight to its row (same scheme as the task picker)
+	if idx := indexOf(pickKeys, msg.String()); idx >= 0 && idx < n {
+		return m.actorPickChoose(idx)
+	}
+	return m, nil
+}
+
+// actorPickChoose closes the picker and applies the idx-th author option as the
+// view-wide filter ("" = everyone).
+func (m Model) actorPickChoose(idx int) (tea.Model, tea.Cmd) {
+	opts := m.actorPickOptions()
+	m.actorPick = actorPickMode{}
+	if idx < 0 || idx >= len(opts) {
+		return m, nil
+	}
+	m.filterActor = opts[idx]
+	return m.applyActorFilter()
+}
+
+// applyActorFilter re-clamps the (possibly shrunken) Tasks/Pending selections,
+// surfaces a notice, and refreshes the server-side Range rollup. Tasks and
+// Pending filter client-side, so they update instantly.
+func (m Model) applyActorFilter() (tea.Model, tea.Cmd) {
+	m.selTask = clamp(m.selTask, 0, len(m.filteredTasks())-1)
+	m.selPend = clamp(m.selPend, 0, len(m.visiblePending())-1)
+	switch {
+	case m.filterActor == "":
+		m.notice = "showing everyone (tasks + backlog + range)"
+	case m.filterActor == m.actor:
+		m.notice = "showing mine only (tasks + backlog + range)"
+	default:
+		m.notice = "showing " + m.filterActor + " only (tasks + backlog + range)"
+	}
+	return m, tea.Batch(m.loadGantt(), m.loadShow(m.selectedTaskID(), m.currentDay()))
 }
 
 // handleConfirm resolves a y/n destructive-action prompt. Enter accepts (same as

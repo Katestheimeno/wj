@@ -2377,14 +2377,19 @@ func TestVisiblePendingOrdersMineFirst(t *testing.T) {
 			t.Fatalf("order[%d] = %q, want %q (full: %v)", i, got[i].ID, w, ids(got))
 		}
 	}
-	// mineOnly hides teammates entirely
-	m.mineOnly = true
+	// filtering to your own handle (M) hides teammates entirely
+	m.filterActor = "me"
 	got = m.visiblePending()
 	if len(got) != 2 || got[0].ID != "P1" || got[1].ID != "P2" {
-		t.Fatalf("mineOnly pending = %v, want [P1 P2]", ids(got))
+		t.Fatalf("mine-only pending = %v, want [P1 P2]", ids(got))
+	}
+	// filtering to a teammate (F) shows only their items
+	m.filterActor = "alex"
+	if got := m.visiblePending(); len(got) != 1 || got[0].ID != "alex/P1" {
+		t.Fatalf("alex-only pending = %v, want [alex/P1]", ids(got))
 	}
 	// solo (no actor) is untouched, original order preserved
-	m.mineOnly = false
+	m.filterActor = ""
 	m.actor = ""
 	if got := m.visiblePending(); len(got) != 4 || got[0].ID != "alex/P1" {
 		t.Errorf("solo should pass through unchanged, got %v", ids(got))
@@ -2413,7 +2418,7 @@ func TestFilteredTasksOrderMineFirst(t *testing.T) {
 	}
 }
 
-func TestFilteredTasksMineOnly(t *testing.T) {
+func TestFilteredTasksActorFilter(t *testing.T) {
 	m := drilled()
 	m.actor = "me"
 	m.grid.Tasks = []wj.GridTask{
@@ -2423,16 +2428,96 @@ func TestFilteredTasksMineOnly(t *testing.T) {
 	if got := len(m.filteredTasks()); got != 2 {
 		t.Fatalf("default (everyone) = %d, want 2", got)
 	}
-	m.mineOnly = true
+	// M: filter to your own handle
+	m.filterActor = "me"
 	got := m.filteredTasks()
 	if len(got) != 1 || got[0].ID != "T1" {
-		t.Fatalf("mineOnly should keep only your own task, got %v", got)
+		t.Fatalf("mine-only should keep only your own task, got %v", got)
 	}
-	// solo/pre-collab (no actor) is unaffected by the toggle
+	// F: filter to a teammate
+	m.filterActor = "alex"
+	got = m.filteredTasks()
+	if len(got) != 1 || got[0].ID != "alex/T1" {
+		t.Fatalf("alex-only should keep only alex's task, got %v", got)
+	}
+	// solo/pre-collab (no actor) is unaffected by the filter
 	m.actor = ""
 	if len(m.filteredTasks()) != 2 {
-		t.Error("mineOnly with no actor should show all tasks (back-compat)")
+		t.Error("actor filter with no actor should show all tasks (back-compat)")
 	}
+}
+
+// TestActorFilterPicker drives the F picker: open it, jump to a teammate, and
+// confirm the whole-view filter is set; then M toggles mine on and off.
+func TestActorFilterPicker(t *testing.T) {
+	m := drilled()
+	m.actor = "me"
+	m.actors = []string{"me", "alex", "sam"}
+	m.grid.Tasks = []wj.GridTask{
+		{ID: "T1", Actor: "me", Project: "backend", Status: "in-progress"},
+		{ID: "alex/T1", Actor: "alex", Project: "ops", Status: "in-progress"},
+	}
+
+	// F opens the picker, starting on the current ("" = everyone) row
+	m, _ = mustModel(m.handleKey(keyMsg("F")))
+	if !m.actorPick.active {
+		t.Fatal("F should open the author picker")
+	}
+	opts := m.actorPickOptions() // ["", "me", "alex", "sam"]
+	if len(opts) != 4 || opts[0] != "" || opts[2] != "alex" {
+		t.Fatalf("picker options = %v", opts)
+	}
+
+	// picking alex (label "3.": "" then me then alex) filters the whole view
+	m, _ = mustModel(m.handleKey(keyMsg("3")))
+	if m.actorPick.active {
+		t.Error("choosing a row should close the picker")
+	}
+	if m.filterActor != "alex" {
+		t.Fatalf("filterActor = %q, want alex", m.filterActor)
+	}
+	if got := m.filteredTasks(); len(got) != 1 || got[0].ID != "alex/T1" {
+		t.Fatalf("after F→alex, tasks = %v, want [alex/T1]", taskIDs(got))
+	}
+	if m.filterLabel() != "alex" {
+		t.Errorf("filterLabel = %q, want alex", m.filterLabel())
+	}
+
+	// M from a teammate filter switches to mine
+	m, _ = mustModel(m.handleKey(keyMsg("M")))
+	if m.filterActor != "me" {
+		t.Fatalf("M should set filterActor to me, got %q", m.filterActor)
+	}
+	if m.filterLabel() != "mine" {
+		t.Errorf("filterLabel = %q, want mine", m.filterLabel())
+	}
+	// M again toggles back to everyone
+	m, _ = mustModel(m.handleKey(keyMsg("M")))
+	if m.filterActor != "" {
+		t.Fatalf("second M should clear the filter, got %q", m.filterActor)
+	}
+}
+
+// TestActorFilterPickerSolo: in a non-shared log F and M are inert no-ops.
+func TestActorFilterPickerSolo(t *testing.T) {
+	m := drilled()
+	m.actor = "" // solo / pre-collab
+	m, _ = mustModel(m.handleKey(keyMsg("F")))
+	if m.actorPick.active {
+		t.Error("F should not open the picker in a solo log")
+	}
+	m, _ = mustModel(m.handleKey(keyMsg("M")))
+	if m.filterActor != "" {
+		t.Errorf("M should be a no-op in a solo log, got %q", m.filterActor)
+	}
+}
+
+func taskIDs(ts []wj.GridTask) []string {
+	out := make([]string, len(ts))
+	for i, t := range ts {
+		out[i] = t.ID
+	}
+	return out
 }
 
 func TestByCyclesThroughPerson(t *testing.T) {

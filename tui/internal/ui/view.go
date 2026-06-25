@@ -45,6 +45,12 @@ func (m Model) View() string {
 			footerStyle.Render("1-9/a-z jump · ↑↓/jk move · enter select · esc cancel")
 	}
 
+	if m.actorPick.active {
+		return header + "\n" +
+			panel("Filter by author", accent, m.actorPickOverlay(w), true, w, 0) + "\n" +
+			footerStyle.Render("1-9/a-z pick · ↑↓/jk move · enter select · esc cancel")
+	}
+
 	foot := m.renderFooter(w)
 	legend := m.bottomLegend(w)
 	legendLines := 0
@@ -271,8 +277,8 @@ func (m Model) specPending() panelSpec {
 	title := "Pending"
 	if n := len(m.visiblePending()); n > 0 {
 		title = fmt.Sprintf("Pending (%d)", n)
-		if m.mineOnly {
-			title += " · mine"
+		if s := m.filterLabel(); s != "" {
+			title += " · " + s
 		}
 	}
 	active := m.pane == panePending
@@ -697,8 +703,8 @@ func (m Model) renderSidebar(w, h int, fill bool) string {
 	pendTitle := "Pending"
 	if n := len(vpend); n > 0 {
 		pendTitle = fmt.Sprintf("Pending (%d)", n)
-		if m.mineOnly {
-			pendTitle += " · mine"
+		if s := m.filterLabel(); s != "" {
+			pendTitle += " · " + s
 		}
 	}
 	if !fill {
@@ -738,8 +744,8 @@ func (m Model) renderPending(cw, maxRows int, active bool) string {
 	if len(pend) == 0 {
 		// only surface the "press a to add" affordance when this panel is
 		// focused — a is a Pending-pane key, so the hint would mislead otherwise.
-		if m.mineOnly && len(m.pending) > 0 {
-			return dimStyle.Render("(none of yours — M shows everyone)")
+		if m.actorFiltered() && len(m.pending) > 0 {
+			return dimStyle.Render("(none for " + m.filterLabel() + " — F changes the author filter)")
 		}
 		if active {
 			return dimStyle.Render("(empty — press a to add)")
@@ -908,8 +914,8 @@ func (m Model) renderZoom(w, h int, fill bool) string {
 		title := "Pending"
 		if n := len(m.visiblePending()); n > 0 {
 			title = fmt.Sprintf("Pending (%d)", n)
-			if m.mineOnly {
-				title += " · mine"
+			if s := m.filterLabel(); s != "" {
+				title += " · " + s
 			}
 		}
 		return panel(title, colorPending, m.renderPending(innerW, body, true), true, w, ph)
@@ -1253,6 +1259,46 @@ func (m Model) pickOverlay(w int) string {
 	return strings.Join(rows, "\n")
 }
 
+// actorPickOverlay renders the author-filter picker: an "everyone" row then one
+// row per known author, each tagged with a jump label and author-tinted; the
+// active filter and your own handle are marked. Mirrors pickOverlay's layout.
+func (m Model) actorPickOverlay(w int) string {
+	cw := w - 4 // panel content width
+	opts := m.actorPickOptions()
+	rows := make([]string, len(opts))
+	for i, a := range opts {
+		label := "  " // labels past the key set: jk + enter still reach them
+		if i < len(pickKeys) {
+			label = pickKeys[i] + "."
+		}
+		name := a
+		lc := ProjectColor(a)
+		switch {
+		case a == "": // the "everyone" (no-filter) entry
+			name = "everyone"
+			lc = lipgloss.Color("250")
+		case a == m.actor:
+			name += " (you)"
+		}
+		mark := "  "
+		if a == m.filterActor { // the currently-active filter
+			mark = pickGlyph("* ", "● ")
+		}
+		if i == m.actorPick.sel {
+			rows[i] = selStyle.Render(padRight(fmt.Sprintf("%s %s%s", label, mark, name), cw))
+		} else {
+			rows[i] = dimStyle.Render(label) + " " + dimStyle.Render(mark) +
+				lipgloss.NewStyle().Foreground(lc).Render(name)
+		}
+	}
+	maxRows := 200
+	if m.height > 8 {
+		maxRows = m.height - 8
+	}
+	rows = windowRows(rows, m.actorPick.sel, maxRows)
+	return strings.Join(rows, "\n")
+}
+
 // helpOverlay is the full keymap, shown when ? is pressed.
 func (m Model) helpOverlay() string {
 	rows := [][2]string{
@@ -1274,7 +1320,8 @@ func (m Model) helpOverlay() string {
 		{"~View", ""},
 		{"/", "search all tasks (id / project / description / tags); Enter jumps"},
 		{"b", "cycle the Range rows: project → task → person"},
-		{"M", "Tasks + Pending: toggle mine-only vs everyone (shared journal)"},
+		{"M", "whole view: toggle mine-only vs everyone (shared journal)"},
+		{"F", "whole view: filter by author — picker of everyone / you / each teammate"},
 		{"", "selecting a project filters the day's Tasks"},
 		{"", "selecting a Today-section project also jumps to today"},
 		{"Shift+L", "cycle the layout: balanced / spotlight (rail) / golden (dashboard) / triptych / quadrant"},
@@ -1451,6 +1498,9 @@ func (m Model) renderTasks(cw, maxRows int) string {
 	}
 	ts := m.filteredTasks()
 	if len(ts) == 0 {
+		if m.actorFiltered() && len(m.grid.Tasks) > 0 {
+			return dimStyle.Render("(none for " + m.filterLabel() + " — F changes the author filter)")
+		}
 		return dimStyle.Render("(no tasks)")
 	}
 	items := make([]string, len(ts))

@@ -9,9 +9,12 @@ import (
 
 func (m Model) loadGantt() tea.Cmd {
 	cli, from, to, by := m.cli, m.from, m.to, m.by
-	mine := m.mineOnly && m.actor != "" // M scopes the Range rollup to your own time
+	actor := "" // M / F scope the Range rollup to one author (inert in a solo log)
+	if m.actor != "" {
+		actor = m.filterActor
+	}
 	return func() tea.Msg {
-		g, err := cli.Gantt(from, to, by, mine)
+		g, err := cli.Gantt(from, to, by, actor)
 		return ganttMsg{g: g, err: err}
 	}
 }

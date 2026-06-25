@@ -166,6 +166,15 @@ var pickKeys = func() []string {
 	return keys
 }()
 
+// actorPickMode is the author-filter picker (opened with F): a list of authors —
+// led by an "everyone" entry — that scopes the whole view (Tasks + Pending +
+// Range) to one person. sel indexes actorPickOptions(). It mirrors pickMode but
+// targets the filter instead of the day's task selection.
+type actorPickMode struct {
+	active bool
+	sel    int
+}
+
 // confirmMode is a y/n guard for destructive mutations (cancel, drop).
 type confirmMode struct {
 	active    bool
@@ -223,6 +232,7 @@ type Model struct {
 	confirm       confirmMode
 	search        searchMode
 	pick          pickMode
+	actorPick     actorPickMode
 	jumpTaskID    string // a search result (or freshly started task) to select once its day's grid loads
 	focusNewTask  bool   // the next mutation is a `start`; select the task it creates
 	showHelp      bool
@@ -252,7 +262,10 @@ type Model struct {
 	showTeam bool        // the team/presence overlay (toggled with w)
 	team     []wj.Member // per-author standup, loaded when the overlay opens
 
-	mineOnly bool // when true, the day's Tasks panel shows only your own tasks (toggle: M)
+	// filterActor scopes Tasks + Pending + Range to a single author ("" = everyone).
+	// M toggles it to your own handle; the F picker sets it to any author. A solo /
+	// pre-collab log (m.actor == "") has no owners, so the filter is inert there.
+	filterActor string
 
 	autoSync  int  // minutes between background syncs; 0 disables (from `auto_sync` config)
 	syncable  bool // data dir is a git repo, so auto/manual sync can run
@@ -525,8 +538,12 @@ func (m Model) filteredTasks() []wj.GridTask {
 	}
 	f := m.projectFilter()
 	solo := m.actor == "" // solo / pre-collab: no owners to filter or reorder
-	// mineOnly hides teammates' tasks (toggle: M); a non-shared log is unaffected.
-	mineOnly := m.mineOnly && !solo
+	// the author filter (M = you, F = anyone) hides other authors' tasks; a
+	// non-shared log has no owners, so it is left untouched.
+	fa := ""
+	if !solo {
+		fa = m.filterActor
+	}
 	if solo && f == "" {
 		return m.grid.Tasks
 	}
@@ -535,7 +552,7 @@ func (m Model) filteredTasks() []wj.GridTask {
 		if f != "" && t.Project != f {
 			continue
 		}
-		if mineOnly && t.Actor != m.actor {
+		if fa != "" && t.Actor != fa {
 			continue
 		}
 		out = append(out, t)
@@ -574,16 +591,17 @@ func (m Model) taskOwned(t wj.GridTask) bool {
 }
 
 // visiblePending is the backlog as shown in the panel: your own items first,
-// teammates' below (stable within each group), with teammates hidden entirely
-// when mineOnly (M) is on. selPend indexes THIS list, so every reader/navigator
-// must go through it. A solo / pre-collab log is returned untouched.
+// teammates' below (stable within each group), with other authors hidden when an
+// author filter (M = you, F = anyone) is active. selPend indexes THIS list, so
+// every reader/navigator must go through it. A solo / pre-collab log is returned
+// untouched.
 func (m Model) visiblePending() []wj.Pending {
 	if m.actor == "" {
 		return m.pending
 	}
 	out := make([]wj.Pending, 0, len(m.pending))
 	for _, p := range m.pending {
-		if m.mineOnly && p.Actor != m.actor {
+		if m.filterActor != "" && p.Actor != m.filterActor {
 			continue
 		}
 		out = append(out, p)
@@ -616,4 +634,28 @@ func (m Model) selectedPending() (wj.Pending, bool) {
 // solo / pre-collab data, or before the actor loaded, counts as owned).
 func (m Model) pendingOwned(p wj.Pending) bool {
 	return p.Actor == "" || m.actor == "" || p.Actor == m.actor
+}
+
+// actorFiltered reports whether an author filter is in effect *and* meaningful —
+// a solo / pre-collab log has no owners to filter, so it never is.
+func (m Model) actorFiltered() bool {
+	return m.filterActor != "" && m.actor != ""
+}
+
+// filterLabel is the panel-title suffix for the active author filter ("" = none):
+// "mine" for your own handle, else the author's handle.
+func (m Model) filterLabel() string {
+	if !m.actorFiltered() {
+		return ""
+	}
+	if m.filterActor == m.actor {
+		return "mine"
+	}
+	return m.filterActor
+}
+
+// actorPickOptions are the rows of the F author-filter picker: an "everyone"
+// entry (the empty string) followed by every known author handle.
+func (m Model) actorPickOptions() []string {
+	return append([]string{""}, m.actors...)
 }

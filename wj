@@ -340,6 +340,18 @@ disp_id() { local a; a=$(cur_actor); case $1 in "$a"/*) printf '%s' "${1#"$a"/}"
 # actor, since bare ids are always your own).
 id_actor() { case $1 in */*) printf '%s' "${1%%/*}" ;; *) printf '%s' "$(cur_actor)" ;; esac; }
 
+# actor_skip <actor>: true (skip) when an --actor filter is active and the given
+# owner isn't it. The generalisation of --mine to an arbitrary author; with no
+# --actor it's always false, so unfiltered output is unchanged.
+actor_skip() { [[ -n $ACTOR_FILTER && $1 != "$ACTOR_FILTER" ]]; }
+
+# scope_label is the " (mine)" / " (<actor>)" suffix for a filtered report header
+# (empty when neither --mine nor --actor is in effect).
+scope_label() {
+    (( MINE )) && { printf ' (mine)'; return; }
+    [[ -n $ACTOR_FILTER ]] && printf ' (%s)' "$ACTOR_FILTER"
+}
+
 # day_stream emits every event for a day from all authors' files, with the id
 # qualified as "<actor>/<id>" (legacy DD.tsv is attributed to the current actor).
 # No sort: each file's events stay in append order, and distinct authors' tasks
@@ -700,7 +712,7 @@ find_task() {
 # ---------------------------------------------------------------------------
 # Argument parsing — extract global flags, leave positionals in ARGS[]
 # ---------------------------------------------------------------------------
-AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; DUE=""; JSON=0; MINE=0; PAUSE_OVERRIDE=""
+AT=""; ON=""; PROJECT_OVERRIDE=""; FROM=""; TO=""; FORMAT="csv"; BY="project"; DAYS=""; DUE=""; JSON=0; MINE=0; ACTOR_FILTER=""; PAUSE_OVERRIDE=""
 declare -a ARGS=()
 need_val() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
 # whether $1 is a real calendar date in YYYY-MM-DD form. GNU `date -d` would
@@ -725,6 +737,7 @@ parse_args() {
             --due)      need_val "$@"; DUE=$2;      shift 2 ;;
             --json)     JSON=1;                     shift ;;
             --mine)     MINE=1;                     shift ;;
+            --actor)    need_val "$@"; ACTOR_FILTER=$(norm_actor "$2"); shift 2 ;;
             --parallel)   PAUSE_OVERRIDE=off;        shift ;;
             --auto-pause) PAUSE_OVERRIDE=on;         shift ;;
             --)         shift; while (( $# )); do ARGS+=("$1"); shift; done ;;
@@ -1441,12 +1454,13 @@ cmd_status() {
     nm=$(report_nm "$d" "$file")
     (( JSON )) && { json_status "$d" "$file" "$nm"; return; }
     day_has_events "$d" || { printf 'No tasks for %s\n' "$d"; return; }
-    printf '\nTasks — %s%s\n\n' "$d" "$( (( MINE )) && printf ' (mine)')"
+    printf '\nTasks — %s%s\n\n' "$d" "$(scope_label)"
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ID PROJECT STATUS TIME DESCRIPTION
     printf '%-4s  %-16s  %-12s  %-7s  %s\n' ---- ---------------- ------------ ------- -----------
     while read -r id; do
         [[ -z $id ]] && continue
         (( MINE )) && [[ $id == */* ]] && continue   # --mine: skip teammates' tasks
+        actor_skip "$(id_actor "$id")" && continue   # --actor: keep only that author
         task_cancelled "$file" "$id" && continue
         local p st mins desc
         p=$(task_project "$file" "$id")
@@ -1460,6 +1474,7 @@ cmd_status() {
     while read -r id; do
         [[ -z $id ]] && continue
         (( MINE )) && [[ $id == */* ]] && continue
+        actor_skip "$(id_actor "$id")" && continue
         task_cancelled "$file" "$id" && continue
         tot=$(( tot + $(task_minutes "$file" "$id" "$nm") ))
     done < <(task_ids "$file")
@@ -1557,6 +1572,7 @@ cmd_grid() {
     while read -r i; do
         [[ -n $i ]] || continue
         (( MINE )) && [[ $i == */* ]] && continue
+        actor_skip "$(id_actor "$i")" && continue
         task_cancelled "$file" "$i" && continue
         ids+=("$i")
     done < <(task_ids "$file")
@@ -1703,6 +1719,7 @@ json_status() {
             [[ -z $id ]] && continue
             (( MINE )) && [[ $id == */* ]] && continue
             task_cancelled "$file" "$id" && continue
+            actor_skip "$(id_actor "$id")" && continue
             p=$(task_project "$file" "$id"); st=$(task_status "$file" "$id")
             mins=$(task_minutes "$file" "$id" "$nm"); desc=$(task_desc "$file" "$id")
             tot=$(( tot + mins ))
@@ -1780,6 +1797,7 @@ json_grid() {
         while read -r id; do
             [[ -z $id ]] && continue
             (( MINE )) && [[ $id == */* ]] && continue
+            actor_skip "$(id_actor "$id")" && continue
             task_cancelled "$file" "$id" && continue
             (( first )) && first=0 || printf ','
             printf '{"id":%s,"actor":%s,"project":%s,"desc":%s,"status":%s,"minutes":%d,"tags":%s,"segments":%s}' \
@@ -1815,6 +1833,7 @@ cmd_gantt() {
         while read -r id; do
             [[ -z $id ]] && continue
             (( MINE )) && [[ $id == */* ]] && continue   # --mine: skip teammates' tasks
+            actor_skip "$(id_actor "$id")" && continue   # --actor: keep only that author
             task_cancelled "$file" "$id" && continue
             proj=$(task_project "$file" "$id")
             case $BY in
@@ -1970,6 +1989,7 @@ cmd_pending() {
             tsv_split "$line"; qid=${PF[0]:-}; created=${PF[1]:-}; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
             [[ -n $qid ]] || continue
             (( MINE )) && [[ $(pid_actor "$qid") != "$me" ]] && continue
+            actor_skip "$(pid_actor "$qid")" && continue
             (( first )) && first=0 || printf ','
             printf '{"id":%s,"actor":%s,"created":%s,"project":%s,"due":%s,"desc":%s}' \
                 "$(json_str "$(disp_pid "$qid")")" "$(json_str "$(pid_actor "$qid")")" \
@@ -1978,12 +1998,13 @@ cmd_pending() {
         printf ']\n'
         return
     fi
-    printf '\nPending%s\n\n' "$( (( MINE )) && printf ' (mine)')"
+    printf '\nPending%s\n\n' "$(scope_label)"
     while IFS= read -r line; do
         [[ -n $line ]] || continue
         tsv_split "$line"; qid=${PF[0]:-}; created=${PF[1]:-}; proj=${PF[2]:-}; due=${PF[3]:-}; desc=${PF[4]:-}
         [[ -n $qid ]] || continue
         (( MINE )) && [[ $(pid_actor "$qid") != "$me" ]] && continue
+        actor_skip "$(pid_actor "$qid")" && continue
         found=1
         printf '%-10s  %-16.16s  %-10s  %s\n' "$(disp_pid "$qid")" "${proj:-—}" "${due:-—}" "$desc"
     done < <(pending_stream)
@@ -2366,6 +2387,8 @@ FLAGS
   --due YYYY-MM-DD    add: optional deadline for a pending task.
   --mine              shared journal: restrict status/grid/gantt/pending to your
                       own items (default shows everyone's).
+  --actor NAME        shared journal: restrict status/grid/gantt/pending to one
+                      author's items (--mine is shorthand for your own handle).
   --format FMT        export format: csv | json | tsv. Default: csv.
   --parallel          start/resume: leave any other running task in the same
                       project running, so you track several in parallel.
